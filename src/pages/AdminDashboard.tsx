@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp, query } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { db, auth, storage, handleFirestoreError, OperationType } from '../lib/firebase';
+import { supabase, handleSupabaseError, OperationType } from '../lib/supabase';
+import type { User } from '@supabase/supabase-js';
+import { useArticles } from '../App';
 import { LogOut, Plus, Edit2, Trash2, Archive, CheckCircle, Database, X, UploadCloud } from 'lucide-react';
 import MDEditor from '@uiw/react-md-editor';
 
@@ -44,6 +43,7 @@ export default function AdminDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [articles, setArticles] = useState<any[]>([]);
+  const { refetch: refetchGlobalArticles } = useArticles();
 
   const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -59,20 +59,153 @@ export default function AdminDashboard() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleGalleryUpload = async (file: File) => {
-    if (!file) return;
+  const fetchGallery = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('gallery')
+        .select('*');
+      if (error) throw error;
+      const fetched = (data || []).map(item => ({
+        url: item.url,
+        name: item.name
+      }));
+      setGalleryImages(fetched);
+    } catch (e) {
+      console.error('Error fetching gallery', e);
+    }
+  };
+
+  const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.onerror = (e) => reject(e);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        alert('Markdown copied to clipboard!');
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('Markdown copied to clipboard!');
+      }
+    } catch (err) {
+      console.warn('Failed to copy automatically, showing alert:', err);
+      alert(`Could not copy automatically. Here is the markdown:\n\n${text}`);
+    }
+  };
+
+  const handleBatchGalleryUpload = async (files: File[]) => {
+    if (files.length === 0) return;
     try {
       setIsUploadingGallery(true);
-      const fileRef = ref(storage, `article_gallery/${Date.now()}_${file.name}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
-      setGalleryImages(prev => [...prev, { url, name: file.name }]);
+      const uploadPromises = files.map(async (file) => {
+        const url = await readFileAsDataURL(file);
+        
+        const { error } = await supabase
+          .from('gallery')
+          .insert({
+            name: file.name,
+            url: url,
+            uploadedAt: new Date().toISOString()
+          });
+        if (error) throw error;
+        
+        return { url, name: file.name };
+      });
+
+      const uploadedImages = await Promise.all(uploadPromises);
+      setGalleryImages(prev => [...prev, ...uploadedImages]);
     } catch (e: any) {
-      console.error('Error uploading to gallery', e);
-      alert(`Failed to upload image: ${e.message}. If this is a permission error, please ensure Firebase Storage is enabled in your Firebase Console and rules allow write access.`);
+      console.error('Error uploading batch to gallery', e);
+      alert(`Failed to upload images: ${e.message}`);
     } finally {
       setIsUploadingGallery(false);
       setIsDraggingGallery(false);
+    }
+  };
+
+  const handleTextareaDrop = async (e: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = (Array.from(e.dataTransfer.files) as File[]).filter(file => file.type.startsWith('image/'));
+    if (files.length > 0) {
+      e.preventDefault();
+      try {
+        const textarea = e.currentTarget;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        
+        const uploadPlaceholder = `\n\n![Uploading images...]()\n\n`;
+        const text = textarea.value;
+        const before = text.substring(0, start);
+        const after = text.substring(end);
+        
+        setEditingArticle(prev => ({ ...prev, contentStr: before + uploadPlaceholder + after }));
+        
+        const uploadPromises = files.map(async (file) => {
+          const url = await readFileAsDataURL(file);
+          
+          const { error } = await supabase
+            .from('gallery')
+            .insert({
+              name: file.name,
+              url: url,
+              uploadedAt: new Date().toISOString()
+            });
+          if (error) throw error;
+          
+          return { url, name: file.name };
+        });
+        
+        const uploaded = await Promise.all(uploadPromises);
+        setGalleryImages(prev => [...prev, ...uploaded]);
+        
+        const markdown = uploaded.map(img => `\n\n![${img.name}](${img.url})`).join('') + '\n\n';
+        
+        setEditingArticle(prev => {
+          const currentContent = prev.contentStr || '';
+          const updatedContent = currentContent.replace(uploadPlaceholder, markdown);
+          return { ...prev, contentStr: updatedContent };
+        });
+      } catch (err: any) {
+        console.error('Error handling file drop', err);
+        alert(`Failed to upload dropped files: ${err.message}`);
+      }
+      return;
+    }
+
+    const galleryData = e.dataTransfer.getData('application/x-gallery-image');
+    if (galleryData) {
+      e.preventDefault();
+      const img = JSON.parse(galleryData);
+      const markdown = `\n\n![${img.name}](${img.url})\n\n`;
+      
+      const textarea = e.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const text = textarea.value;
+      const before = text.substring(0, start);
+      const after = text.substring(end);
+      
+      setEditingArticle(prev => ({
+        ...prev,
+        contentStr: before + markdown + after
+      }));
+      
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(start + markdown.length, start + markdown.length);
+      }, 50);
     }
   };
 
@@ -80,13 +213,11 @@ export default function AdminDashboard() {
     if (!file) return;
     try {
       setIsUploadingImage(true);
-      const fileRef = ref(storage, `article_images/${Date.now()}_${file.name}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
-      setEditingArticle({ ...editingArticle, imageUrl: url });
+      const url = await readFileAsDataURL(file);
+      setEditingArticle(prev => ({ ...prev, imageUrl: url }));
     } catch (e: any) {
-      console.error('Error uploading image', e);
-      alert(`Failed to upload image: ${e.message}. If this is a permission error, please ensure Firebase Storage is enabled in your Firebase Console and rules allow write access.`);
+      console.error('Error reading image', e);
+      alert(`Failed to handle image: ${e.message}`);
     } finally {
       setIsUploadingImage(false);
       setIsDraggingImage(false);
@@ -94,32 +225,49 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-      if (currentUser) {
-        fetchArticles();
+    // Auth bypass: mock login for POC/testing
+    setUser({ email: 'admin@lensainsignia.com', displayName: 'Lensa Editor' } as any);
+    setLoading(false);
+    fetchArticles();
+    fetchGallery();
+
+    // Set up auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        setUser({
+          email: session.user.email,
+          displayName: session.user.user_metadata?.full_name || session.user.email?.split('@')[0]
+        } as any);
+      } else {
+        if (event === 'SIGNED_OUT') {
+          setUser(null);
+        }
       }
     });
-    return () => unsubscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const fetchArticles = async () => {
     try {
       setAuthError(null);
-      const q = query(collection(db, 'articles'));
-      const querySnapshot = await getDocs(q);
-      const fetched = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const { data, error } = await supabase
+        .from('articles')
+        .select('*');
+      if (error) throw error;
+      const fetched = data || [];
 
       fetched.sort((a: any, b: any) => {
-        const timeA = a.createdAt ? a.createdAt.toMillis() : 0;
-        const timeB = b.createdAt ? b.createdAt.toMillis() : 0;
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return timeB - timeA;
       });
 
       setArticles(fetched);
     } catch (e) {
-      handleFirestoreError(e, OperationType.LIST, 'articles');
+      handleSupabaseError(e, OperationType.LIST, 'articles');
     }
   };
 
@@ -127,25 +275,28 @@ export default function AdminDashboard() {
     if (isLoggingIn) return;
     setAuthError(null);
     setIsLoggingIn(true);
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
     try {
-      await signInWithPopup(auth, provider);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+      if (error) throw error;
     } catch (error: any) {
-      console.error("Auth popup error:", error);
-      if (error.code === 'auth/popup-blocked') {
-        setAuthError("Popup blocked by browser. Please allow popups, or open this app in a new tab (click the 'Open in new tab' button in the AI Studio toolbar) to login.");
-      } else if (error.code === 'auth/cancelled-popup-request' || error?.message?.includes('Pending promise was never set')) {
-        setAuthError("Popup was closed or blocked by iframe restrictions. Please open this app in a new tab to login.");
-      } else {
-        setAuthError(error.message || "Failed to authenticate. Try opening in a new tab.");
-      }
+      console.error("Auth error:", error);
+      setAuthError(error.message || "Failed to authenticate.");
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
 
   const seedDatabase = async () => {
     try {
@@ -153,11 +304,15 @@ export default function AdminDashboard() {
       for (const article of SAMPLE_ARTICLES) {
         const articleWithDate = {
           ...article,
-          createdAt: Timestamp.now(),
+          createdAt: new Date().toISOString(),
         };
-        await addDoc(collection(db, 'articles'), articleWithDate);
+        const { error } = await supabase
+          .from('articles')
+          .insert(articleWithDate);
+        if (error) throw error;
       }
       await fetchArticles();
+      await refetchGlobalArticles();
     } catch (error) {
       console.error("Error seeding database:", error);
       alert("Failed to seed database: " + (error as Error).message);
@@ -169,10 +324,15 @@ export default function AdminDashboard() {
   const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this article?")) {
       try {
-        await deleteDoc(doc(db, 'articles', id));
+        const { error } = await supabase
+          .from('articles')
+          .delete()
+          .eq('id', id);
+        if (error) throw error;
         fetchArticles();
+        refetchGlobalArticles();
       } catch (e) {
-        handleFirestoreError(e, OperationType.DELETE, `articles/${id}`);
+        handleSupabaseError(e, OperationType.DELETE, `articles/${id}`);
       }
     }
   };
@@ -180,10 +340,15 @@ export default function AdminDashboard() {
   const handleArchiveState = async (id: string, currentStatus: string) => {
     const newStatus = currentStatus === 'published' ? 'archived' : 'published';
     try {
-      await updateDoc(doc(db, 'articles', id), { status: newStatus });
+      const { error } = await supabase
+        .from('articles')
+        .update({ status: newStatus })
+        .eq('id', id);
+      if (error) throw error;
       fetchArticles();
+      refetchGlobalArticles();
     } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `articles/${id}`);
+      handleSupabaseError(e, OperationType.UPDATE, `articles/${id}`);
     }
   };
 
@@ -227,16 +392,24 @@ export default function AdminDashboard() {
       if (articleData.id) {
         const id = articleData.id;
         delete articleData.id; // Don't save id in document
-        articleData.updatedAt = Timestamp.now();
-        await updateDoc(doc(db, 'articles', id), articleData);
+        articleData.updatedAt = new Date().toISOString();
+        const { error } = await supabase
+          .from('articles')
+          .update(articleData)
+          .eq('id', id);
+        if (error) throw error;
       } else {
-        articleData.createdAt = Timestamp.now();
+        articleData.createdAt = new Date().toISOString();
         articleData.date = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
         articleData.time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-        await addDoc(collection(db, 'articles'), articleData);
+        const { error } = await supabase
+          .from('articles')
+          .insert(articleData);
+        if (error) throw error;
       }
       closeModal();
       fetchArticles();
+      refetchGlobalArticles();
     } catch (e) {
       console.error(e);
       alert("Failed to save article");
@@ -383,45 +556,76 @@ export default function AdminDashboard() {
 
               <div>
                 <label className="block text-sm font-semibold mb-1">Image URL or Upload</label>
-                <div 
-                  className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${isDraggingImage ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}`}
-                  onDragOver={(e) => { e.preventDefault(); setIsDraggingImage(true); }}
-                  onDragLeave={(e) => { e.preventDefault(); setIsDraggingImage(false); }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setIsDraggingImage(false);
-                    const file = e.dataTransfer.files?.[0];
-                    if (file && file.type.startsWith('image/')) {
-                      handleImageUpload(file);
-                    }
-                  }}
-                >
-                  {isUploadingImage ? (
-                    <div className="text-blue-500 font-semibold flex items-center justify-center space-x-2">
-                       <UploadCloud className="animate-bounce" /> <span>Uploading...</span>
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                  <div className="md:col-span-8 flex flex-col justify-between">
+                    <div 
+                      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors flex-1 flex flex-col justify-center ${isDraggingImage ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}`}
+                      onDragOver={(e) => { e.preventDefault(); setIsDraggingImage(true); }}
+                      onDragLeave={(e) => { e.preventDefault(); setIsDraggingImage(false); }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setIsDraggingImage(false);
+                        const file = e.dataTransfer.files?.[0];
+                        if (file && file.type.startsWith('image/')) {
+                          handleImageUpload(file);
+                        }
+                      }}
+                    >
+                      {isUploadingImage ? (
+                        <div className="text-blue-500 font-semibold flex items-center justify-center space-x-2">
+                           <UploadCloud className="animate-bounce" /> <span>Uploading...</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center space-y-2">
+                          <input 
+                            type="file" 
+                            ref={fileInputRef} 
+                            className="hidden" 
+                            accept="image/*" 
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleImageUpload(file);
+                            }} 
+                          />
+                          <UploadCloud className="text-gray-400" size={32} />
+                          <p className="text-sm text-gray-600">
+                            Drag and drop an image here, or{' '}
+                            <button type="button" onClick={() => fileInputRef.current?.click()} className="text-blue-600 hover:underline">browse</button>
+                          </p>
+                          <span className="text-xs text-gray-400">or paste a URL below</span>
+                        </div>
+                      )}
                     </div>
-                  ) : (
-                    <div className="flex flex-col items-center space-y-2">
-                      <input 
-                        type="file" 
-                        ref={fileInputRef} 
-                        className="hidden" 
-                        accept="image/*" 
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleImageUpload(file);
-                        }} 
-                      />
-                      <UploadCloud className="text-gray-400" size={32} />
-                      <p className="text-sm text-gray-600">
-                        Drag and drop an image here, or{' '}
-                        <button type="button" onClick={() => fileInputRef.current?.click()} className="text-blue-600 hover:underline">browse</button>
-                      </p>
-                      <span className="text-xs text-gray-400">or paste a URL below</span>
+                    <input type="url" placeholder="https://..." className="w-full border p-2 rounded mt-2" value={editingArticle.imageUrl || ''} onChange={e => setEditingArticle({...editingArticle, imageUrl: e.target.value})} />
+                  </div>
+                  
+                  <div className="md:col-span-4 border-t md:border-t-0 md:border-l pt-4 md:pt-0 md:pl-4 border-gray-200 flex flex-col max-h-[200px]">
+                    <span className="block text-xs font-semibold mb-2 text-gray-500 uppercase tracking-wider">Pick from Gallery</span>
+                    <div className="overflow-y-auto grid grid-cols-2 gap-2 flex-1 pr-1" style={{ contentVisibility: 'auto' }}>
+                      {galleryImages.length === 0 ? (
+                        <div className="col-span-2 text-center text-xs text-gray-400 py-8">
+                          No images uploaded yet.
+                        </div>
+                      ) : (
+                        galleryImages.map((img, i) => (
+                          <div 
+                            key={i} 
+                            onClick={() => setEditingArticle({...editingArticle, imageUrl: img.url})}
+                            className={`relative border rounded cursor-pointer aspect-square overflow-hidden hover:border-blue-500 transition-colors group ${editingArticle.imageUrl === img.url ? 'border-blue-600 ring-2 ring-blue-100' : 'border-gray-200'}`}
+                            title={img.name}
+                          >
+                            <img src={img.url} className="h-full w-full object-cover" />
+                            {editingArticle.imageUrl === img.url && (
+                              <div className="absolute inset-0 bg-blue-600 bg-opacity-20 flex items-center justify-center">
+                                <span className="bg-blue-600 text-white rounded-full p-0.5"><CheckCircle size={14} /></span>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
-                <input type="url" placeholder="https://..." className="w-full border p-2 rounded mt-2" value={editingArticle.imageUrl || ''} onChange={e => setEditingArticle({...editingArticle, imageUrl: e.target.value})} />
                 {editingArticle.imageUrl && (
                   <div className="mt-2 text-sm text-green-600 flex items-center space-x-1">
                     <CheckCircle size={14} /> <span className="truncate max-w-sm" title={editingArticle.imageUrl}>Image Set</span>
@@ -443,11 +647,10 @@ export default function AdminDashboard() {
                   onDrop={(e) => {
                     e.preventDefault();
                     setIsDraggingGallery(false);
-                    Array.from(e.dataTransfer.files).forEach(file => {
-                      if (file.type.startsWith('image/')) {
-                        handleGalleryUpload(file);
-                      }
-                    });
+                    const files = (Array.from(e.dataTransfer.files) as File[]).filter(file => file.type.startsWith('image/'));
+                    if (files.length > 0) {
+                      handleBatchGalleryUpload(files);
+                    }
                   }}
                 >
                   <input 
@@ -458,9 +661,10 @@ export default function AdminDashboard() {
                     multiple
                     onChange={(e) => {
                       if (e.target.files) {
-                        Array.from(e.target.files).forEach(file => {
-                          handleGalleryUpload(file);
-                        });
+                        const files = (Array.from(e.target.files) as File[]).filter(file => file.type.startsWith('image/'));
+                        if (files.length > 0) {
+                          handleBatchGalleryUpload(files);
+                        }
                       }
                     }} 
                   />
@@ -468,10 +672,19 @@ export default function AdminDashboard() {
                   {galleryImages.length > 0 && (
                     <div className="flex flex-wrap gap-4 mb-4 justify-center w-full">
                       {galleryImages.map((img, i) => (
-                        <div key={i} className="relative group border rounded p-1 w-24 h-24 flex items-center justify-center bg-gray-50 overflow-hidden">
+                        <div 
+                          key={i} 
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', `![${img.name}](${img.url})`);
+                            e.dataTransfer.setData('application/x-gallery-image', JSON.stringify(img));
+                            e.dataTransfer.effectAllowed = 'copy';
+                          }}
+                          className="relative group border rounded p-1 w-24 h-24 flex items-center justify-center bg-gray-50 overflow-hidden cursor-grab active:cursor-grabbing"
+                        >
                           <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
                           <div className="absolute inset-0 bg-black bg-opacity-70 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
+                             <button 
                               type="button" 
                               className="text-white text-xs font-bold mb-1 hover:text-blue-300"
                               onClick={(e) => {
@@ -502,11 +715,20 @@ export default function AdminDashboard() {
                             </button>
                             <button
                                 type="button"
+                                className="text-blue-300 text-xs font-semibold hover:text-white mb-1"
+                                onClick={(e) => {
+                                    e.preventDefault();
+                                    setEditingArticle(prev => ({ ...prev, imageUrl: img.url }));
+                                }}
+                            >
+                                Set as Main
+                            </button>
+                            <button
+                                type="button"
                                 className="text-gray-300 text-xs hover:text-white"
                                 onClick={(e) => {
                                     e.preventDefault();
-                                    navigator.clipboard.writeText(`![${img.name}](${img.url})`);
-                                    alert('Markdown copied to clipboard!');
+                                    copyToClipboard(`![${img.name}](${img.url})`);
                                 }}
                             >
                                 Copy
@@ -528,7 +750,7 @@ export default function AdminDashboard() {
                     <p className="text-sm text-gray-600 mt-2">
                       Drag & drop images here, or <button type="button" onClick={() => galleryInputRef.current?.click()} className="text-blue-600 hover:underline">browse</button>.
                     </p>
-                    <span className="text-xs text-gray-400">Place your cursor in the content editor below, then hover over an image and click <strong>Insert</strong> to add it exactly where you want.</span>
+                    <span className="text-xs text-gray-400">Place your cursor in the content editor below, then hover over an image and click <strong>Insert</strong> to add it, or simply **drag and drop** it directly onto the editor.</span>
                   </div>
                 </div>
               </div>
@@ -558,6 +780,14 @@ export default function AdminDashboard() {
                     value={editingArticle.contentStr || (editingArticle.contentArr ? editingArticle.contentArr.join('\n\n') : '')}
                     onChange={(val) => setEditingArticle({...editingArticle, contentStr: val || ''})}
                     height={400}
+                    textareaProps={{
+                      onDrop: (e) => {
+                        handleTextareaDrop(e as unknown as React.DragEvent<HTMLTextAreaElement>);
+                      },
+                      onDragOver: (e) => {
+                        e.preventDefault();
+                      }
+                    }}
                   />
                 </div>
               </div>

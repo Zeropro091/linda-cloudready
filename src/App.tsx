@@ -2,18 +2,22 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-
-import React, { useState, useEffect, useMemo } from 'react';
+// src/App.tsx
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { Helmet, HelmetProvider } from 'react-helmet-async';
 import { Search, Menu, ChevronRight, Mail, Share2, Twitter, Facebook, Linkedin, Link as LinkIcon, X, CheckCircle2 } from 'lucide-react';
 import AdminDashboard from './pages/AdminDashboard';
-import { collection, getDocs, query, orderBy } from 'firebase/firestore';
-import { db } from './lib/firebase';
+import { supabase } from './lib/supabase';
 import MDEditor from '@uiw/react-md-editor';
+import { AuthProvider } from './components/AuthProvider';
 
 // --- Global Context for Articles ---
-export const ArticleContext = React.createContext<{ articles: any[], loading: boolean }>({ articles: [], loading: true });
+export const ArticleContext = React.createContext<{ articles: any[], loading: boolean, refetch: () => Promise<void> }>({
+  articles: [],
+  loading: true,
+  refetch: async () => {}
+});
 
 export const useArticles = () => React.useContext(ArticleContext);
 
@@ -27,145 +31,7 @@ const generateContent = (title: string) => [
   `As the situation continues to evolve, one thing is certain: the landscape has changed permanently. Observers advise cautious optimism while preparing for a range of possible outcomes in the near future.`
 ];
 
-const ARTICLES = [
-  {
-    id: "featured-1",
-    title: "Global Markets Rally as Tech Sector Shows Unexpected Resilience",
-    subtitle: "Despite early quarter concerns, major technology firms report record-breaking earnings, driving indices to all-time highs and easing recession fears.",
-    excerpt: "Despite early quarter concerns, major technology firms report record-breaking earnings, driving indices to all-time highs and easing recession fears.",
-    author: "Sarah Jenkins",
-    role: "Senior Financial Correspondent",
-    date: "April 14, 2026",
-    time: "2 hours ago",
-    category: "Business",
-    imageUrl: "https://picsum.photos/seed/markets/1200/800",
-    content: [
-      "The global financial markets experienced an unprecedented surge today, driven largely by a tech sector that refused to bow to early-quarter pessimism. Major indices across North America, Europe, and Asia closed at record highs, painting a picture of a global economy that is far more resilient than analysts predicted just months ago.",
-      "At the heart of this rally are the quarterly earnings reports from the 'Big Tech' conglomerates. Defying expectations of a slowdown due to regulatory pressures and supply chain bottlenecks, these companies posted record-breaking revenues. The surge was led by unexpected growth in cloud computing divisions and enterprise AI solutions, which saw adoption rates double compared to the previous fiscal year.",
-      "\"What we're seeing is a fundamental shift in how businesses are investing in technology,\" explained Dr. Aris Thorne, Chief Economist at Global Horizon Bank. \"It's no longer about expansion; it's about efficiency. The tools these tech giants are providing are becoming indispensable for companies trying to navigate a complex global market.\"",
-      "The ripple effect of this tech rally was felt across other sectors. Consumer discretionary stocks saw a modest bump, while industrials held steady. However, the bond market saw a slight dip as investors moved capital into equities, chasing the higher yields promised by the tech sector's performance.",
-      "Despite the overwhelming optimism, some analysts are urging caution. The rapid ascent of these stocks has raised concerns about overvaluation. \"We are in uncharted territory,\" warned Elena Rostova, a market strategist. \"While the fundamentals are strong, the speed of this rally leaves little room for error. Any negative news, whether geopolitical or economic, could trigger a sharp correction.\"",
-      "For now, however, the bulls are firmly in control. As the trading day closed, the atmosphere on the trading floors was one of cautious jubilation. The tech sector has once again proven its ability to drive the broader market, leaving investors eagerly anticipating the next wave of innovation and growth."
-    ]
-  },
-  {
-    id: "sec-1",
-    title: "New Climate Accord Reached in Geneva Summit",
-    subtitle: "World leaders agree on aggressive new carbon reduction targets for 2035.",
-    excerpt: "World leaders agree on aggressive new carbon reduction targets for 2035.",
-    author: "David Chen",
-    role: "Environmental Editor",
-    date: "April 14, 2026",
-    category: "World",
-    time: "4 hours ago",
-    imageUrl: "https://picsum.photos/seed/climate/600/400",
-    content: generateContent("New Climate Accord Reached in Geneva Summit")
-  },
-  {
-    id: "sec-2",
-    title: "Central Bank Signals Potential Rate Cuts by Q3",
-    subtitle: "Inflation cools faster than expected, prompting a shift in monetary policy.",
-    excerpt: "Inflation cools faster than expected, prompting a shift in monetary policy.",
-    author: "Michael Ross",
-    role: "Economics Reporter",
-    date: "April 14, 2026",
-    category: "Business",
-    time: "5 hours ago",
-    imageUrl: "https://picsum.photos/seed/bank/600/400",
-    content: generateContent("Central Bank Signals Potential Rate Cuts by Q3")
-  },
-  {
-    id: "sec-3",
-    title: "Breakthrough in Quantum Computing Architecture",
-    subtitle: "Researchers achieve stable qubits at room temperature, a holy grail for computing.",
-    excerpt: "Researchers achieve stable qubits at room temperature, a holy grail for computing.",
-    author: "Dr. Elena Rostova",
-    role: "Science Contributor",
-    date: "April 14, 2026",
-    category: "Tech",
-    time: "6 hours ago",
-    imageUrl: "https://picsum.photos/seed/quantum/600/400",
-    content: generateContent("Breakthrough in Quantum Computing Architecture")
-  },
-  {
-    id: "sec-4",
-    title: "Urban Planning Shift: The Rise of 15-Minute Cities",
-    subtitle: "How metropolises are redesigning themselves for hyper-local living.",
-    excerpt: "How metropolises are redesigning themselves for hyper-local living.",
-    author: "James Wilson",
-    role: "Urban Affairs",
-    date: "April 14, 2026",
-    category: "Science",
-    time: "8 hours ago",
-    imageUrl: "https://picsum.photos/seed/city/600/400",
-    content: generateContent("Urban Planning Shift: The Rise of 15-Minute Cities")
-  },
-  {
-    id: "trend-1",
-    title: "Elections 2026: Key Battleground States Shift",
-    subtitle: "Recent polling shows unexpected demographic realignments.",
-    excerpt: "Recent polling shows unexpected demographic realignments.",
-    author: "Amanda Pierce",
-    role: "Political Analyst",
-    date: "April 13, 2026",
-    category: "Politics",
-    time: "12 hours ago",
-    imageUrl: "https://picsum.photos/seed/vote/600/400",
-    content: generateContent("Elections 2026: Key Battleground States Shift")
-  },
-  {
-    id: "trend-2",
-    title: "The Future of Remote Work: Post-Pandemic Reality",
-    subtitle: "Companies settle into permanent hybrid models as office leases expire.",
-    excerpt: "Companies settle into permanent hybrid models as office leases expire.",
-    author: "Marcus Johnson",
-    role: "Workplace Reporter",
-    date: "April 13, 2026",
-    category: "Business",
-    time: "14 hours ago",
-    imageUrl: "https://picsum.photos/seed/office/600/400",
-    content: generateContent("The Future of Remote Work: Post-Pandemic Reality")
-  },
-  {
-    id: "trend-3",
-    title: "Electric Vehicle Sales Surpass Traditional Autos in Europe",
-    subtitle: "A historic milestone for the automotive industry.",
-    excerpt: "A historic milestone for the automotive industry.",
-    author: "Sophie Laurent",
-    role: "European Correspondent",
-    date: "April 13, 2026",
-    category: "Tech",
-    time: "16 hours ago",
-    imageUrl: "https://picsum.photos/seed/ev/600/400",
-    content: generateContent("Electric Vehicle Sales Surpass Traditional Autos in Europe")
-  },
-  {
-    id: "trend-4",
-    title: "Healthcare Reform Bill Passes Senate with Narrow Margin",
-    subtitle: "Sweeping changes to prescription drug pricing approved.",
-    excerpt: "Sweeping changes to prescription drug pricing approved.",
-    author: "Thomas Wright",
-    role: "Capitol Hill Reporter",
-    date: "April 13, 2026",
-    category: "Health",
-    time: "18 hours ago",
-    imageUrl: "https://picsum.photos/seed/health/600/400",
-    content: generateContent("Healthcare Reform Bill Passes Senate with Narrow Margin")
-  },
-  {
-    id: "trend-5",
-    title: "Space Tourism: First Commercial Flight Scheduled for Next Month",
-    subtitle: "Civilian passengers prepare for suborbital journey.",
-    excerpt: "Civilian passengers prepare for suborbital journey.",
-    author: "Dr. Elena Rostova",
-    role: "Science Contributor",
-    date: "April 12, 2026",
-    category: "Science",
-    time: "1 day ago",
-    imageUrl: "https://picsum.photos/seed/space/600/400",
-    content: generateContent("Space Tourism: First Commercial Flight Scheduled for Next Month")
-  }
-];
+const ARTICLES: any[] = [];
 
 // --- Components ---
 
@@ -762,7 +628,7 @@ const HomePage = () => {
 const ArticlePage = () => {
   const { id } = useParams();
   const [copied, setCopied] = useState(false);
-  const { articles } = useArticles();
+  const { articles, loading } = useArticles();
   
   const article = articles.find(a => a.id === id);
 
@@ -782,6 +648,15 @@ const ArticlePage = () => {
     
     return related;
   }, [article, articles]);
+
+  if (loading) {
+    return (
+      <main className="flex-1 max-w-7xl mx-auto px-4 py-20 text-center w-full flex flex-col items-center justify-center min-h-[50vh]">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-accent mb-4"></div>
+        <p className="text-ink-light">Loading article...</p>
+      </main>
+    );
+  }
 
   if (!article) {
     return (
@@ -929,20 +804,25 @@ const ArticlePage = () => {
               <MDEditor.Markdown source={article.contentStr} />
             ) : (
               // Fallback for old contentArr or mock data
-              <>
-                <p className="text-xl leading-relaxed mb-6">
-                  {article.content && article.content[0] && (
-                    <>
-                      <span className="float-left text-7xl font-black leading-none pr-3 pt-2 text-ink">{article.content[0].charAt(0)}</span>
-                      {article.content[0].substring(1)}
-                    </>
-                  )}
-                </p>
-                
-                {article.content && article.content.slice(1).map((paragraph: string, idx: number) => (
-                  <p key={idx} className="mb-6">{paragraph}</p>
-                ))}
-              </>
+              (() => {
+                const paragraphs = article.contentArr || article.content || [];
+                return (
+                  <>
+                    <p className="text-xl leading-relaxed mb-6">
+                      {paragraphs[0] && (
+                        <>
+                          <span className="float-left text-7xl font-black leading-none pr-3 pt-2 text-ink">{paragraphs[0].charAt(0)}</span>
+                          {paragraphs[0].substring(1)}
+                        </>
+                      )}
+                    </p>
+                    
+                    {paragraphs.slice(1).map((paragraph: string, idx: number) => (
+                      <p key={idx} className="mb-6">{paragraph}</p>
+                    ))}
+                  </>
+                );
+              })()
             )}
           </div>
 
@@ -1048,39 +928,42 @@ export default function App() {
   const [articles, setArticles] = useState<any[]>(ARTICLES);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchArticles = async () => {
-      try {
-        const q = query(collection(db, 'articles'));
-        const querySnapshot = await getDocs(q);
-        const fetched = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        
-        // Sort on client side to avoid excluding documents without createdAt
-        fetched.sort((a: any, b: any) => {
-          const timeA = a.createdAt ? a.createdAt.toMillis() : 0;
-          const timeB = b.createdAt ? b.createdAt.toMillis() : 0;
-          return timeB - timeA;
-        });
+  const fetchArticles = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('articles')
+        .select('*');
+      if (error) throw error;
+      const fetched = data || [];
+      
+      // Sort on client side to avoid excluding documents without createdAt
+      fetched.sort((a: any, b: any) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
 
-        if (fetched.length > 0) {
-          // Only show published articles to users
-          const publishedArticles = fetched.filter((a: any) => a.status !== 'archived');
-          setArticles(publishedArticles.length > 0 ? publishedArticles : fetched);
-        } else {
-          setArticles(ARTICLES);
-        }
-      } catch (e) {
-        console.error("Error fetching articles:", e);
-      } finally {
-        setLoading(false);
+      if (fetched.length > 0) {
+        // Only show published articles to users
+        const publishedArticles = fetched.filter((a: any) => a.status !== 'archived');
+        setArticles(publishedArticles.length > 0 ? publishedArticles : fetched);
+      } else {
+        setArticles(ARTICLES);
       }
-    };
-    fetchArticles();
+    } catch (e) {
+      console.error("Error fetching articles:", e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchArticles();
+  }, [fetchArticles]);
 
   return (
     <HelmetProvider>
-      <ArticleContext.Provider value={{ articles, loading }}>
+      <ArticleContext.Provider value={{ articles, loading, refetch: fetchArticles }}>
         <Router>
           <ScrollToTop />
           <div className="min-h-screen flex flex-col">
