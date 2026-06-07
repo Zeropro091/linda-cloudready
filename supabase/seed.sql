@@ -1,3 +1,87 @@
+-- Create an admin user if it doesn't exist
+-- Password is '123123'
+INSERT INTO auth.users (id, instance_id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, email_change, email_change_token_new, recovery_token, aud, role)
+SELECT 
+    '00000000-0000-0000-0000-000000000001', 
+    '00000000-0000-0000-0000-000000000000', 
+    'admin@admin.com', 
+    crypt('123123', gen_salt('bf')), 
+    now(), 
+    '{"provider":"email","providers":["email"]}', 
+    '{"full_name":"Admin"}', 
+    now(), 
+    now(), 
+    '', '', '', '', 'authenticated', 'authenticated'
+WHERE NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'admin@admin.com');
+
+-- Ensure the profile is admin
+INSERT INTO public.profiles (id, email, role, quota)
+VALUES ('00000000-0000-0000-0000-000000000001', 'admin@admin.com', 'admin', 999)
+ON CONFLICT (id) DO UPDATE SET role = 'admin', quota = 999;
+
+-- Create a dev user if it doesn't exist
+-- Password is '123123'
+INSERT INTO auth.users (id, instance_id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, email_change, email_change_token_new, recovery_token, aud, role)
+SELECT 
+    '00000000-0000-0000-0000-000000000002', 
+    '00000000-0000-0000-0000-000000000000', 
+    'dev@dev.com', 
+    crypt('123123', gen_salt('bf')), 
+    now(), 
+    '{"provider":"email","providers":["email"]}', 
+    '{"full_name":"Dev User"}', 
+    now(), 
+    now(), 
+    '', '', '', '', 'authenticated', 'authenticated'
+WHERE NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'dev@dev.com');
+
+-- Ensure the profile is dev
+INSERT INTO public.profiles (id, email, role, quota)
+VALUES ('00000000-0000-0000-0000-000000000002', 'dev@dev.com', 'dev', 999)
+ON CONFLICT (id) DO UPDATE SET role = 'dev', quota = 999;
+
+-- Create a poster/journalist user if it doesn't exist
+-- Password is '123123'
+INSERT INTO auth.users (id, instance_id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, email_change, email_change_token_new, recovery_token, aud, role)
+SELECT 
+    '00000000-0000-0000-0000-000000000003', 
+    '00000000-0000-0000-0000-000000000000', 
+    'poster@poster.com', 
+    crypt('123123', gen_salt('bf')), 
+    now(), 
+    '{"provider":"email","providers":["email"]}', 
+    '{"full_name":"Poster User"}', 
+    now(), 
+    now(), 
+    '', '', '', '', 'authenticated', 'authenticated'
+WHERE NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'poster@poster.com');
+
+-- Ensure the profile is poster
+INSERT INTO public.profiles (id, email, role, quota)
+VALUES ('00000000-0000-0000-0000-000000000003', 'poster@poster.com', 'poster', 5)
+ON CONFLICT (id) DO UPDATE SET role = 'poster', quota = 5;
+
+-- Create a regular user if it doesn't exist
+-- Password is '123123'
+INSERT INTO auth.users (id, instance_id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, email_change, email_change_token_new, recovery_token, aud, role)
+SELECT 
+    '00000000-0000-0000-0000-000000000004', 
+    '00000000-0000-0000-0000-000000000000', 
+    'user@user.com', 
+    crypt('123123', gen_salt('bf')), 
+    now(), 
+    '{"provider":"email","providers":["email"]}', 
+    '{"full_name":"Regular User"}', 
+    now(), 
+    now(), 
+    '', '', '', '', 'authenticated', 'authenticated'
+WHERE NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'user@user.com');
+
+-- Ensure the profile is user
+INSERT INTO public.profiles (id, email, role, quota)
+VALUES ('00000000-0000-0000-0000-000000000004', 'user@user.com', 'user', 5)
+ON CONFLICT (id) DO UPDATE SET role = 'user', quota = 5;
+
 -- Seed articles table
 insert into public.articles (id, title, subtitle, excerpt, author, role, date, time, category, "imageUrl", "contentArr", "contentStr", status) values
 (

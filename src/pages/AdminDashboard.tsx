@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { supabase, handleSupabaseError, OperationType } from '../lib/supabase';
-import type { User } from '@supabase/supabase-js';
 import { useArticles } from '../App';
-import { LogOut, Plus, Edit2, Trash2, Archive, CheckCircle, Database, X, UploadCloud } from 'lucide-react';
+import { LogOut, Plus, Edit2, Trash2, Archive, CheckCircle, Database, X, UploadCloud, Mail, Sparkles, ShieldAlert } from 'lucide-react';
 import MDEditor from '@uiw/react-md-editor';
+import { useAuth } from '../components/AuthProvider';
 
 const SAMPLE_ARTICLES = [
   {
@@ -40,13 +41,46 @@ const SAMPLE_ARTICLES = [
 ];
 
 export default function AdminDashboard() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, role, quota, loading: authLoading, logout, signInWithEmail, signUpWithEmail, refetchProfile } = useAuth();
+  const [loading, setLoading] = useState(false);
   const [articles, setArticles] = useState<any[]>([]);
   const { refetch: refetchGlobalArticles } = useArticles();
+  const location = useLocation();
 
   const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [registerRole, setRegisterRole] = useState<'user' | 'poster'>('user');
+  const [activeTab, setActiveTab] = useState<'articles' | 'users'>('articles');
+  const [profiles, setProfiles] = useState<any[]>([]);
+
+  const fetchProfiles = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*');
+      if (error) throw error;
+      setProfiles(data || []);
+    } catch (e) {
+      console.error('Error fetching profiles', e);
+    }
+  };
+
+  const updateProfile = async (id: string, updates: any) => {
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', id);
+      if (error) throw error;
+      fetchProfiles();
+    } catch (e: any) {
+      alert(`Update failed: ${e.message}`);
+    }
+  };
+
   const [editingArticle, setEditingArticle] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
@@ -225,37 +259,29 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    // Auth bypass: mock login for POC/testing
-    setUser({ email: 'admin@lensainsignia.com', displayName: 'Lensa Editor' } as any);
-    setLoading(false);
-    fetchArticles();
-    fetchGallery();
+    if (location.state?.tab) {
+      setActiveTab(location.state.tab as 'articles' | 'users');
+    }
+  }, [location]);
 
-    // Set up auth state listener
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user) {
-        setUser({
-          email: session.user.email,
-          displayName: session.user.user_metadata?.full_name || session.user.email?.split('@')[0]
-        } as any);
-      } else {
-        if (event === 'SIGNED_OUT') {
-          setUser(null);
-        }
+  useEffect(() => {
+    if (user && (role === 'admin' || role === 'dev' || role === 'poster')) {
+      fetchArticles();
+      fetchGallery();
+      if (role === 'admin' || role === 'dev') {
+        fetchProfiles();
       }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
+    }
+  }, [user, role]);
 
   const fetchArticles = async () => {
     try {
-      setAuthError(null);
-      const { data, error } = await supabase
-        .from('articles')
-        .select('*');
+      setLoading(true);
+      let query = supabase.from('articles').select('*');
+      if (role === 'poster') {
+        query = query.eq('author_id', user?.id);
+      }
+      const { data, error } = await query;
       if (error) throw error;
       const fetched = data || [];
 
@@ -268,6 +294,26 @@ export default function AdminDashboard() {
       setArticles(fetched);
     } catch (e) {
       handleSupabaseError(e, OperationType.LIST, 'articles');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async () => {
+    if (isLoggingIn) return;
+    setAuthError(null);
+    setIsLoggingIn(true);
+    try {
+      if (!email || !password) throw new Error("Email and password are required.");
+      if (password.length < 6) throw new Error("Password must be at least 6 characters.");
+      await signUpWithEmail(email, password, registerRole);
+      alert("Registration successful! You can now log in.");
+      setIsRegistering(false);
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      setAuthError(error.message || "Failed to register.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -276,15 +322,8 @@ export default function AdminDashboard() {
     setAuthError(null);
     setIsLoggingIn(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          queryParams: {
-            prompt: 'select_account',
-          },
-        },
-      });
-      if (error) throw error;
+      if (!email || !password) throw new Error("Email and password are required.");
+      await signInWithEmail(email, password);
     } catch (error: any) {
       console.error("Auth error:", error);
       setAuthError(error.message || "Failed to authenticate.");
@@ -294,8 +333,7 @@ export default function AdminDashboard() {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
+    await logout();
   };
 
   const seedDatabase = async () => {
@@ -356,17 +394,21 @@ export default function AdminDashboard() {
     if (article) {
       setEditingArticle({ ...article });
     } else {
+      if (role === 'poster' && quota <= 0) {
+        alert("Insufficient article quota. Please contact an administrator to get more quota.");
+        return;
+      }
       setEditingArticle({
         title: "",
         subtitle: "",
         excerpt: "",
-        author: user?.displayName || user?.email?.split('@')[0] || "Admin",
-        role: "Editor",
+        author: user?.user_metadata?.full_name || user?.email?.split('@')[0] || (role === 'poster' ? 'Journalist' : 'Admin'),
+        role: role === 'poster' ? 'Journalist' : 'Editor',
         date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
         time: "Just now",
         category: "World",
         imageUrl: "",
-        contentStr: "", // Assuming single field for inputting text
+        contentStr: "",
         status: "published"
       });
     }
@@ -382,61 +424,201 @@ export default function AdminDashboard() {
     e.preventDefault();
     try {
       setLoading(true);
-      const articleData = { ...editingArticle };
-      
-      // Parse content string into array for simplistic rendering
-      if (articleData.contentStr) {
-        articleData.contentArr = articleData.contentStr.split('\n').filter((p: string) => p.trim() !== "");
-      }
+      const src = { ...editingArticle };
 
-      if (articleData.id) {
-        const id = articleData.id;
-        delete articleData.id; // Don't save id in document
-        articleData.updatedAt = new Date().toISOString();
+      // Build a clean payload with only known DB columns
+      const contentStr = src.contentStr || (src.contentArr ? src.contentArr.join('\n\n') : '');
+      const contentArr = contentStr
+        ? contentStr.split('\n').filter((p: string) => p.trim() !== '')
+        : src.contentArr || [];
+
+      const basePayload: Record<string, any> = {
+        title:      src.title,
+        subtitle:   src.subtitle || null,
+        excerpt:    src.excerpt || null,
+        author:     src.author,
+        role:       src.role || null,       // author job title
+        date:       src.date,
+        time:       src.time || null,
+        category:   src.category || null,
+        imageUrl:   src.imageUrl || null,
+        contentArr,
+        contentStr: contentStr || null,
+        status:     src.status || 'published',
+      };
+
+      if (src.id) {
+        // UPDATE
         const { error } = await supabase
           .from('articles')
-          .update(articleData)
-          .eq('id', id);
+          .update({ ...basePayload, updatedAt: new Date().toISOString() })
+          .eq('id', src.id);
         if (error) throw error;
       } else {
-        articleData.createdAt = new Date().toISOString();
-        articleData.date = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-        articleData.time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        // INSERT
+        if (role === 'poster' && quota <= 0) {
+          alert("Insufficient article quota. Please contact an administrator.");
+          return;
+        }
         const { error } = await supabase
           .from('articles')
-          .insert(articleData);
+          .insert({
+            ...basePayload,
+            author_id: user?.id,
+            createdAt: new Date().toISOString(),
+            date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+            time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          });
         if (error) throw error;
       }
+
       closeModal();
       fetchArticles();
       refetchGlobalArticles();
-    } catch (e) {
-      console.error(e);
-      alert("Failed to save article");
+      await refetchProfile();
+    } catch (e: any) {
+      console.error('Save error:', e);
+      alert("Failed to save article: " + (e?.message || JSON.stringify(e)));
     } finally {
       setLoading(false);
     }
   };
 
-  if (loading) return <div className="p-8 text-center">Loading...</div>;
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 animate-fade-in">
         <div className="bg-white p-8 rounded shadow-lg max-w-sm w-full text-center">
-          <h1 className="text-2xl font-bold mb-6">Admin Login</h1>
+          <h1 className="text-2xl font-bold mb-6">Lensa Insignia - Portal</h1>
           {authError && (
              <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 text-sm rounded text-left">
                {authError}
              </div>
           )}
-          <button 
-            onClick={handleLogin}
-            disabled={isLoggingIn}
-            className={`w-full text-white font-bold py-3 rounded transition ${isLoggingIn ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
-          >
-            {isLoggingIn ? 'Opening popup...' : 'Sign In with Google'}
-          </button>
+
+          <div className="space-y-4">
+            <div className="text-left">
+              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Email Address</label>
+              <input
+                type="email"
+                className="w-full border p-2 rounded"
+                placeholder="email@example.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !isRegistering && handleLogin()}
+              />
+            </div>
+            <div className="text-left">
+              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Password</label>
+              <input
+                type="password"
+                className="w-full border p-2 rounded"
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !isRegistering && handleLogin()}
+              />
+            </div>
+
+            {isRegistering && (
+              <div className="text-left">
+                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Account Type</label>
+                <select
+                  className="w-full border p-2 rounded text-sm"
+                  value={registerRole}
+                  onChange={e => setRegisterRole(e.target.value as 'user' | 'poster')}
+                >
+                  <option value="user">Reader</option>
+                  <option value="poster">Journalist / Poster</option>
+                </select>
+              </div>
+            )}
+
+            <button
+              onClick={isRegistering ? handleRegister : handleLogin}
+              disabled={isLoggingIn}
+              className={`w-full text-white font-bold py-3 rounded transition cursor-pointer ${isLoggingIn ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+            >
+              {isLoggingIn
+                ? (isRegistering ? 'Registering...' : 'Logging in...')
+                : (isRegistering ? 'Register Account' : 'Sign In')}
+            </button>
+            <p className="mt-4 text-sm text-gray-600">
+              {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
+              <button
+                onClick={() => { setIsRegistering(!isRegistering); setAuthError(null); }}
+                className="text-blue-600 hover:underline font-semibold bg-transparent border-0 cursor-pointer"
+              >
+                {isRegistering ? 'Sign In' : 'Register Now'}
+              </button>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (role === 'user' || role === 'reader') {
+    return (
+      <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8 flex justify-center items-start">
+        <div className="bg-white p-8 rounded-xl border border-gray-200 shadow-sm max-w-lg w-full">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="p-3 bg-red-100 rounded-full text-red-650">
+              <Mail className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-serif font-black text-gray-900 leading-tight">My Profile</h1>
+              <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Standard User</p>
+            </div>
+          </div>
+          
+          <div className="space-y-6">
+            <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Email Address</span>
+              <span className="font-semibold text-gray-900 text-sm">{user.email}</span>
+            </div>
+
+            {/* Daily Notifications Feature Card */}
+            <div className="p-5 border border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50/50 rounded-lg space-y-3 animate-pulse-slow">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold text-purple-900 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-purple-650" /> Daily News Notifications
+                </span>
+                <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-[10px] font-bold rounded uppercase tracking-wider">
+                  Upcoming
+                </span>
+              </div>
+              <p className="text-xs text-purple-800 leading-relaxed">
+                Stay informed with a curated digest of top headlines, global markets, and investigative reports sent directly to your email every morning.
+              </p>
+              
+              <div className="pt-2 flex items-center justify-between border-t border-purple-100">
+                <span className="text-xs text-purple-700 font-medium">Notification Delivery Status</span>
+                <button 
+                  disabled
+                  className="px-4 py-1.5 bg-purple-200 text-purple-800 rounded text-xs font-bold cursor-not-allowed border-0"
+                >
+                  Coming Soon
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-4 border-t border-gray-200">
+              <button 
+                onClick={handleLogout}
+                className="flex-1 bg-gray-900 hover:bg-gray-800 text-white font-bold py-2.5 rounded text-sm transition-colors shadow-sm cursor-pointer border-0"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -446,78 +628,169 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-7xl mx-auto bg-white p-8 rounded shadow">
         <div className="flex justify-between items-center mb-8 pb-4 border-b">
-          <h1 className="text-3xl font-black">Lensa Insignia - Admin</h1>
+          <h1 className="text-3xl font-black">
+            {role === 'poster' ? 'Lensa Insignia - Journalist' : role === 'dev' ? 'Lensa Insignia - Developer' : 'Lensa Insignia - Admin'}
+          </h1>
           <div className="flex items-center space-x-4">
             <span className="text-sm font-semibold">{user.email}</span>
-            <button onClick={handleLogout} className="flex items-center space-x-1 text-red-600 hover:text-red-800">
+            <button onClick={handleLogout} className="flex items-center space-x-1 text-red-650 hover:text-red-850 bg-transparent border-0 cursor-pointer">
               <LogOut size={16} /> <span>Logout</span>
             </button>
           </div>
         </div>
 
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold">Articles Management</h2>
-          <div className="flex space-x-2">
+        <div className="flex space-x-4 mb-6 border-b">
+          <button 
+            className={`pb-2 px-2 font-bold ${activeTab === 'articles' ? 'border-b-2 border-black text-black' : 'text-gray-400'}`}
+            onClick={() => setActiveTab('articles')}
+          >
+            Articles
+          </button>
+          {(role === 'admin' || role === 'dev') && (
             <button 
-              onClick={seedDatabase}
-              className="flex items-center space-x-2 bg-indigo-600 text-white px-4 py-2 rounded text-sm hover:bg-indigo-700">
-              <Database size={16} />
-              <span>Seed Mock Articles</span>
+              className={`pb-2 px-2 font-bold ${activeTab === 'users' ? 'border-b-2 border-black text-black' : 'text-gray-400'}`}
+              onClick={() => setActiveTab('users')}
+            >
+              User Management
             </button>
-            <button 
-              onClick={() => openModal()}
-              className="flex items-center space-x-2 bg-black text-white px-4 py-2 rounded text-sm hover:bg-gray-800">
-              <Plus size={16} />
-              <span>Add New Article</span>
-            </button>
-          </div>
+          )}
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-gray-50 border-b">
-                <th className="p-3 text-sm font-semibold">Title</th>
-                <th className="p-3 text-sm font-semibold">Category</th>
-                <th className="p-3 text-sm font-semibold">Date</th>
-                <th className="p-3 text-sm font-semibold">Status</th>
-                <th className="p-3 text-sm font-semibold text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {articles.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="p-8 text-center text-gray-500">
-                    No articles found in Firestore. You can seed the database later.
-                  </td>
+        {role === 'poster' && (
+          <div className="mb-6 p-4 bg-purple-550 border border-purple-200 rounded-lg flex items-center justify-between animate-fade-in" style={{ backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }}>
+            <div>
+              <h3 className="font-bold text-purple-900">Journalist Upload Quota</h3>
+              <p className="text-xs text-purple-750">You can upload up to {quota} more articles. Each new upload consumes 1 quota point.</p>
+            </div>
+            <div className="text-right">
+              <span className="text-2xl font-black text-purple-900">{quota}</span>
+              <span className="block text-[10px] text-purple-500 font-bold uppercase tracking-wider">Remaining</span>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'articles' ? (
+          <>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">Articles Management</h2>
+              <div className="flex space-x-2">
+                {(role === 'admin' || role === 'dev') && (
+                  <button 
+                    onClick={seedDatabase}
+                    className="flex items-center space-x-2 bg-indigo-650 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm cursor-pointer border-0">
+                    <Database size={16} />
+                    <span>Seed Mock Articles</span>
+                  </button>
+                )}
+                <button 
+                  onClick={() => {
+                    if (role === 'poster' && quota <= 0) {
+                      alert("Insufficient article quota. Please request more quota from an administrator.");
+                    } else {
+                      openModal();
+                    }
+                  }}
+                  disabled={role === 'poster' && quota <= 0}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded text-sm transition ${role === 'poster' && quota <= 0 ? 'bg-gray-300 text-gray-500 cursor-not-allowed border-0' : 'bg-black text-white hover:bg-gray-800 cursor-pointer border-0'}`}
+                >
+                  <Plus size={16} />
+                  <span>Add New Article</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b">
+                    <th className="p-3 text-sm font-semibold">Title</th>
+                    <th className="p-3 text-sm font-semibold">Category</th>
+                    <th className="p-3 text-sm font-semibold">Date</th>
+                    <th className="p-3 text-sm font-semibold">Status</th>
+                    <th className="p-3 text-sm font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {articles.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-gray-500 font-medium">
+                        No articles found. Use the seed button or add manually.
+                      </td>
+                    </tr>
+                  ) : (
+                    articles.map(article => (
+                      <tr key={article.id} className="border-b hover:bg-gray-50">
+                        <td className="p-3">
+                          <div className="font-bold">{article.title}</div>
+                          <div className="text-xs text-gray-500">{article.author}</div>
+                        </td>
+                        <td className="p-3 text-sm">{article.category}</td>
+                        <td className="p-3 text-sm">{article.date}</td>
+                        <td className="p-3 text-sm">
+                          <span className={`px-2 py-1 rounded text-xs font-bold ${article.status === 'archived' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
+                            {article.status ? article.status.toUpperCase() : 'PUBLISHED'}
+                          </span>
+                        </td>
+                        <td className="p-3 flex justify-end space-x-2 text-right">
+                           <button onClick={() => openModal(article)} className="p-1.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 cursor-pointer border-0" title="Edit"><Edit2 size={16} /></button>
+                           <button onClick={() => handleArchiveState(article.id, article.status)} className="p-1.5 bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 cursor-pointer border-0" title={article.status === 'archived' ? 'Unarchive' : 'Archive'}>
+                             {article.status === 'archived' ? <CheckCircle size={16} /> : <Archive size={16} />}
+                           </button>
+                           <button onClick={() => handleDelete(article.id)} className="p-1.5 bg-red-100 text-red-650 rounded hover:bg-red-200 cursor-pointer border-0" title="Delete"><Trash2 size={16} /></button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-gray-50 border-b">
+                  <th className="p-3 text-sm font-semibold">User Email</th>
+                  <th className="p-3 text-sm font-semibold">Role</th>
+                  <th className="p-3 text-sm font-semibold">Quota</th>
+                  <th className="p-3 text-sm font-semibold text-right">Actions</th>
                 </tr>
-              ) : (
-                articles.map(article => (
-                  <tr key={article.id} className="border-b hover:bg-gray-50">
-                    <td className="p-3">
-                      <div className="font-bold">{article.title}</div>
-                      <div className="text-xs text-gray-500">{article.author}</div>
-                    </td>
-                    <td className="p-3 text-sm">{article.category}</td>
-                    <td className="p-3 text-sm">{article.date}</td>
+              </thead>
+              <tbody>
+                {profiles.map(profile => (
+                  <tr key={profile.id} className="border-b hover:bg-gray-50">
+                    <td className="p-3 text-sm">{profile.email}</td>
                     <td className="p-3 text-sm">
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${article.status === 'archived' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
-                        {article.status ? article.status.toUpperCase() : 'PUBLISHED'}
-                      </span>
+                      <select 
+                        value={profile.role} 
+                        disabled={role === 'admin' && (profile.role === 'admin' || profile.role === 'dev')}
+                        onChange={(e) => updateProfile(profile.id, { role: e.target.value })}
+                        className="border rounded p-1 text-xs bg-white"
+                      >
+                        <option value="user">User</option>
+                        <option value="poster">Poster</option>
+                        {(role === 'dev' || profile.role === 'admin') && <option value="admin">Admin</option>}
+                        {(role === 'dev' || profile.role === 'dev') && <option value="dev">Dev</option>}
+                      </select>
                     </td>
-                    <td className="p-3 flex justify-end space-x-2">
-                       <button onClick={() => openModal(article)} className="p-1.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200" title="Edit"><Edit2 size={16} /></button>
-                       <button onClick={() => handleArchiveState(article.id, article.status)} className={`p-1.5 rounded ${article.status === 'archived' ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200'}`} title={article.status === 'archived' ? 'Publish' : 'Archive'}>
-                         {article.status === 'archived' ? <CheckCircle size={16} /> : <Archive size={16} />}
-                       </button>
-                       <button onClick={() => handleDelete(article.id)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200" title="Delete"><Trash2 size={16} /></button>
+                    <td className="p-3 text-sm">
+                      <input 
+                        type="number" 
+                        value={profile.quota || 0} 
+                        disabled={role === 'admin' && profile.role === 'dev'}
+                        onChange={(e) => updateProfile(profile.id, { quota: parseInt(e.target.value) || 0 })}
+                        className="w-20 border rounded p-1 text-xs"
+                      />
+                    </td>
+                    <td className="p-3 text-right">
+                       {/* Optional delete user if needed */}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
       
       {isModalOpen && editingArticle && (
@@ -626,11 +899,6 @@ export default function AdminDashboard() {
                     </div>
                   </div>
                 </div>
-                {editingArticle.imageUrl && (
-                  <div className="mt-2 text-sm text-green-600 flex items-center space-x-1">
-                    <CheckCircle size={14} /> <span className="truncate max-w-sm" title={editingArticle.imageUrl}>Image Set</span>
-                  </div>
-                )}
               </div>
 
               <div>
@@ -638,156 +906,15 @@ export default function AdminDashboard() {
                 <textarea className="w-full border p-2 rounded" rows={2} value={editingArticle.excerpt || ''} onChange={e => setEditingArticle({...editingArticle, excerpt: e.target.value})}></textarea>
               </div>
 
-              <div className="mb-4">
-                <label className="block text-sm font-semibold mb-2">Media Gallery (for use in content)</label>
-                <div 
-                  className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors flex flex-col items-center ${isDraggingGallery ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}`}
-                  onDragOver={(e) => { e.preventDefault(); setIsDraggingGallery(true); }}
-                  onDragLeave={(e) => { e.preventDefault(); setIsDraggingGallery(false); }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setIsDraggingGallery(false);
-                    const files = (Array.from(e.dataTransfer.files) as File[]).filter(file => file.type.startsWith('image/'));
-                    if (files.length > 0) {
-                      handleBatchGalleryUpload(files);
-                    }
-                  }}
-                >
-                  <input 
-                    type="file" 
-                    ref={galleryInputRef} 
-                    className="hidden" 
-                    accept="image/*" 
-                    multiple
-                    onChange={(e) => {
-                      if (e.target.files) {
-                        const files = (Array.from(e.target.files) as File[]).filter(file => file.type.startsWith('image/'));
-                        if (files.length > 0) {
-                          handleBatchGalleryUpload(files);
-                        }
-                      }
-                    }} 
-                  />
-                  
-                  {galleryImages.length > 0 && (
-                    <div className="flex flex-wrap gap-4 mb-4 justify-center w-full">
-                      {galleryImages.map((img, i) => (
-                        <div 
-                          key={i} 
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', `![${img.name}](${img.url})`);
-                            e.dataTransfer.setData('application/x-gallery-image', JSON.stringify(img));
-                            e.dataTransfer.effectAllowed = 'copy';
-                          }}
-                          className="relative group border rounded p-1 w-24 h-24 flex items-center justify-center bg-gray-50 overflow-hidden cursor-grab active:cursor-grabbing"
-                        >
-                          <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
-                          <div className="absolute inset-0 bg-black bg-opacity-70 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                             <button 
-                              type="button" 
-                              className="text-white text-xs font-bold mb-1 hover:text-blue-300"
-                              onClick={(e) => {
-                                  e.preventDefault(); 
-                                  const markdownImg = `\n![${img.name}](${img.url})\n`;
-                                  const textarea = document.querySelector('textarea.w-md-editor-text-input') as HTMLTextAreaElement;
-                                  
-                                  setEditingArticle(prev => {
-                                    const currentContent = prev.contentStr || '';
-                                    if (textarea) {
-                                      const start = textarea.selectionStart;
-                                      const end = textarea.selectionEnd;
-                                      const newContent = currentContent.substring(0, start) + markdownImg + currentContent.substring(end);
-                                      
-                                      setTimeout(() => {
-                                        textarea.focus();
-                                        textarea.setSelectionRange(start + markdownImg.length, start + markdownImg.length);
-                                      }, 10);
-                                      
-                                      return { ...prev, contentStr: newContent };
-                                    } else {
-                                      return { ...prev, contentStr: currentContent + `\n\n${markdownImg}\n\n` };
-                                    }
-                                  });
-                              }}
-                            >
-                              Insert
-                            </button>
-                            <button
-                                type="button"
-                                className="text-blue-300 text-xs font-semibold hover:text-white mb-1"
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    setEditingArticle(prev => ({ ...prev, imageUrl: img.url }));
-                                }}
-                            >
-                                Set as Main
-                            </button>
-                            <button
-                                type="button"
-                                className="text-gray-300 text-xs hover:text-white"
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    copyToClipboard(`![${img.name}](${img.url})`);
-                                }}
-                            >
-                                Copy
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex flex-col items-center space-y-1">
-                    {isUploadingGallery ? (
-                      <div className="text-blue-500 font-semibold flex items-center space-x-2">
-                        <UploadCloud className="animate-bounce" size={20} /> <span>Uploading...</span>
-                      </div>
-                    ) : (
-                      <UploadCloud className="text-gray-400" size={28} />
-                    )}
-                    <p className="text-sm text-gray-600 mt-2">
-                      Drag & drop images here, or <button type="button" onClick={() => galleryInputRef.current?.click()} className="text-blue-600 hover:underline">browse</button>.
-                    </p>
-                    <span className="text-xs text-gray-400">Place your cursor in the content editor below, then hover over an image and click <strong>Insert</strong> to add it, or simply **drag and drop** it directly onto the editor.</span>
-                  </div>
-                </div>
-              </div>
-
               <div data-color-mode="light">
                 <div className="flex justify-between items-center mb-1">
                   <label className="block text-sm font-semibold">Content (Markdown format)</label>
-                  <label className="cursor-pointer text-sm bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200">
-                    <input type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        try {
-                          const { parseDocument } = await import('../lib/fileParser');
-                          const content = await parseDocument(file);
-                          setEditingArticle(prev => ({...prev, contentStr: prev.contentStr ? prev.contentStr + '\n\n' + content : content}));
-                        } catch (error) {
-                          alert('Error parsing document: ' + (error as Error).message);
-                        }
-                      }
-                      e.target.value = '';
-                    }} />
-                    <span>Upload Document (.pdf, .docx)</span>
-                  </label>
                 </div>
                 <div className="border rounded overflow-hidden">
                   <MDEditor
                     value={editingArticle.contentStr || (editingArticle.contentArr ? editingArticle.contentArr.join('\n\n') : '')}
                     onChange={(val) => setEditingArticle({...editingArticle, contentStr: val || ''})}
                     height={400}
-                    textareaProps={{
-                      onDrop: (e) => {
-                        handleTextareaDrop(e as unknown as React.DragEvent<HTMLTextAreaElement>);
-                      },
-                      onDragOver: (e) => {
-                        e.preventDefault();
-                      }
-                    }}
                   />
                 </div>
               </div>

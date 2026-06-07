@@ -8,20 +8,20 @@ service cloud.firestore {
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
-    function isValidArticle() {
-      return incoming().keys().hasAll(['title', 'author', 'date', 'status'])
-        && incoming().title is string && incoming().title.size() > 0
-        && incoming().status in ['published', 'archived']
-        && incoming().author is string
-        && incoming().date is string;
-    }
-
+    // Enforce write protection
     match /articles/{articleId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isSignedIn();
     }
 
     match /gallery/{imageId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

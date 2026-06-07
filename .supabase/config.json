@@ -1,0 +1,9 @@
+{
+  "project_id": "lin",
+  "project_ref": "abcdefghijklmnopqrst",
+  "org": "local",
+  "api": {
+    "url": "http://127.0.0.1:54321",
+    "jwt_secret": "env(SUPABASE_JWT_SECRET)"
+  }
+}

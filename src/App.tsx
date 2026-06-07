@@ -6,11 +6,18 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { Helmet, HelmetProvider } from 'react-helmet-async';
-import { Search, Menu, ChevronRight, Mail, Share2, Twitter, Facebook, Linkedin, Link as LinkIcon, X, CheckCircle2 } from 'lucide-react';
+import { Search, Menu, ChevronRight, Mail, Share2, Twitter, Facebook, Linkedin, Link as LinkIcon, X, CheckCircle2, LogOut, Sparkles, Users, FileText, Activity, ShieldAlert, Award } from 'lucide-react';
 import AdminDashboard from './pages/AdminDashboard';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import ProfilePage from './pages/ProfilePage';
+import BecomeWriterPage from './pages/BecomeWriterPage';
+import DashboardPage from './pages/DashboardPage';
+import CategoryPage from './pages/CategoryPage';
+import NotFoundPage from './pages/NotFoundPage';
 import { supabase } from './lib/supabase';
 import MDEditor from '@uiw/react-md-editor';
-import { AuthProvider } from './components/AuthProvider';
+import { AuthProvider, useAuth } from './components/AuthProvider';
 
 // --- Global Context for Articles ---
 export const ArticleContext = React.createContext<{ articles: any[], loading: boolean, refetch: () => Promise<void> }>({
@@ -31,7 +38,41 @@ const generateContent = (title: string) => [
   `As the situation continues to evolve, one thing is certain: the landscape has changed permanently. Observers advise cautious optimism while preparing for a range of possible outcomes in the near future.`
 ];
 
-const ARTICLES: any[] = [];
+const ARTICLES: any[] = [
+  {
+    id: 'sample-1',
+    title: "Global Markets Rally as Tech Sector Shows Unexpected Resilience",
+    subtitle: "Despite early quarter concerns, major technology firms report record-breaking earnings, driving indices to all-time highs and easing recession fears.",
+    excerpt: "Despite early quarter concerns, major technology firms report record-breaking earnings.",
+    author: "Sarah Jenkins",
+    role: "Senior Financial Correspondent",
+    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+    time: "2 hours ago",
+    category: "Business",
+    imageUrl: "https://picsum.photos/seed/markets/1200/800",
+    contentArr: [
+      "The global financial markets experienced an unprecedented surge today.",
+      "At the heart of this rally are the quarterly earnings reports from the 'Big Tech' conglomerates."
+    ],
+    status: "published"
+  },
+  {
+    id: 'sample-2',
+    title: "New Climate Accord Reached in Geneva Summit",
+    subtitle: "World leaders agree on aggressive new carbon reduction targets for 2035.",
+    excerpt: "World leaders agree on aggressive new carbon reduction targets for 2035.",
+    author: "David Chen",
+    role: "Environmental Editor",
+    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+    time: "4 hours ago",
+    category: "World",
+    imageUrl: "https://picsum.photos/seed/climate/600/400",
+    contentArr: [
+      "World leaders gathered today to announce a bold new plan."
+    ],
+    status: "published"
+  }
+];
 
 // --- Components ---
 
@@ -95,7 +136,13 @@ const ScrollToTop = () => {
 };
 
 const Header = () => {
-  const date = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const { user, role, logout } = useAuth();
+  const date = new Date().toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
   const [isVisible, setIsVisible] = useState(true);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -112,8 +159,8 @@ const Header = () => {
       const currentScrollY = window.scrollY;
       if (currentScrollY > lastScrollY && currentScrollY > 100) {
         setIsVisible(false);
-        setIsMenuOpen(false); // Close menu on scroll
-        setIsSearchOpen(false); // Close search on scroll
+        setIsMenuOpen(false); 
+        setIsSearchOpen(false);
       } else if (currentScrollY < lastScrollY) {
         setIsVisible(true);
       }
@@ -149,6 +196,32 @@ const Header = () => {
             <span className="hidden sm:inline-block">Edition: U.S.</span>
           </div>
           <div className="flex items-center space-x-4">
+            {user ? (
+              <div className="flex items-center space-x-4">
+                <span className="hidden sm:inline-block">Hi, {user.email?.split('@')[0]}</span>
+                {(role === 'admin' || role === 'dev' || role === 'poster') && (
+                  <Link to="/dashboard" className="text-accent font-bold hover:underline">
+                    Dashboard
+                  </Link>
+                )}
+                {role === 'user' && (
+                  <Link to="/profile" className="text-accent font-bold hover:underline">
+                    My Profile
+                  </Link>
+                )}
+                <button 
+                  onClick={logout} 
+                  className="hover:text-ink transition-colors font-bold lowercase flex items-center gap-1"
+                >
+                  <LogOut size={12} /> Logout
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-3">
+                <Link to="/login" className="hover:text-ink transition-colors">Sign In</Link>
+                <Link to="/register" className="hover:text-ink transition-colors font-bold bg-ink text-paper px-3 py-1 text-xs uppercase tracking-wider hover:bg-ink-light">Register</Link>
+              </div>
+            )}
             <Link to="/newsletters" className="hover:text-ink transition-colors">Newsletters</Link>
           </div>
         </div>
@@ -182,10 +255,8 @@ const Header = () => {
           </div>
           
           <div className="flex items-center space-x-4 w-10 sm:w-20">
-            {/* Placeholder to keep the title centered */}
           </div>
 
-          {/* Search Dropdown */}
           {isSearchOpen && (
             <div className="absolute top-full left-0 w-full bg-paper border-b border-border p-4 shadow-lg z-50">
               <form onSubmit={handleSearch} className="max-w-2xl mx-auto flex items-center">
@@ -218,8 +289,8 @@ const Header = () => {
           {CATEGORIES.map((item) => (
             <Link 
               key={item} 
-              to={`/?category=${item}`} 
-              className={`hover:text-accent transition-colors ${currentCategory === item ? 'text-accent border-b-2 border-accent' : ''}`}
+              to={`/category/${item.toLowerCase()}`} 
+              className={`hover:text-accent transition-colors ${currentCategory === item.toLowerCase() ? 'text-accent border-b-2 border-accent' : ''}`}
             >
               {item}
             </Link>
@@ -228,7 +299,6 @@ const Header = () => {
         <div className="editorial-divider"></div>
       </header>
 
-      {/* Mobile Menu Overlay */}
       {isMenuOpen && (
         <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setIsMenuOpen(false)}>
           <div 
@@ -256,7 +326,7 @@ const Header = () => {
               {CATEGORIES.map(cat => (
                 <Link 
                   key={cat} 
-                  to={`/?category=${cat}`} 
+                  to={`/category/${cat.toLowerCase()}`} 
                   onClick={() => setIsMenuOpen(false)}
                   className="font-bold hover:text-accent"
                 >
@@ -924,9 +994,11 @@ const StaticPage = ({ title }: { title: string }) => {
   );
 };
 
-export default function App() {
+function AppContent() {
+  const { user, role, logout } = useAuth();
   const [articles, setArticles] = useState<any[]>(ARTICLES);
   const [loading, setLoading] = useState(true);
+  const [isBoardOpen, setIsBoardOpen] = useState(false);
 
   const fetchArticles = useCallback(async () => {
     try {
@@ -962,30 +1034,198 @@ export default function App() {
   }, [fetchArticles]);
 
   return (
+    <ArticleContext.Provider value={{ articles, loading, refetch: fetchArticles }}>
+      <Router>
+        <ScrollToTop />
+        <div className="min-h-screen flex flex-col relative">
+          <Header />
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/article/:id" element={<ArticlePage />} />
+
+            {/* Auth */}
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+
+            {/* User */}
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/become-a-writer" element={<BecomeWriterPage />} />
+
+            {/* Staff dashboards */}
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/dashboard/admin" element={<DashboardPage />} />
+
+            {/* Legacy redirect — /admin still works */}
+            <Route path="/admin" element={<DashboardPage />} />
+
+            {/* Category pages */}
+            <Route path="/category/:slug" element={<CategoryPage />} />
+
+            {/* Static pages */}
+            <Route path="/newsletters" element={<StaticPage title="Newsletters" />} />
+            <Route path="/about" element={<StaticPage title="Our Story" />} />
+            <Route path="/careers" element={<StaticPage title="Careers" />} />
+            <Route path="/ethics" element={<StaticPage title="Journalistic Ethics" />} />
+            <Route path="/contact" element={<StaticPage title="Contact Us" />} />
+            <Route path="/terms" element={<StaticPage title="Terms of Service" />} />
+            <Route path="/privacy" element={<StaticPage title="Privacy Policy" />} />
+            <Route path="/cookies" element={<StaticPage title="Cookie Policy" />} />
+            <Route path="/accessibility" element={<StaticPage title="Accessibility" />} />
+
+            {/* 404 */}
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+          <Footer />
+
+          {/* Floating Spark Button & Board Panel for Admin / Dev */}
+          {user && (role === 'admin' || role === 'dev') && (
+            <>
+              {/* Spark Button in bottom corner */}
+              <button 
+                onClick={() => setIsBoardOpen(true)}
+                className="fixed bottom-6 right-6 z-50 p-4 rounded-full text-white shadow-2xl hover:scale-110 active:scale-95 transition-all duration-300 flex items-center justify-center group cursor-pointer border-0"
+                style={{ background: 'linear-gradient(135deg, #8B5CF6 0%, #EC4899 50%, #EF4444 100%)', boxShadow: '0 10px 25px -5px rgba(139, 92, 246, 0.4)' }}
+                title="Admin / Dev Panel"
+                id="spark-button"
+              >
+                <Sparkles className="w-6 h-6 text-white" />
+                <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-500 ease-in-out whitespace-nowrap text-xs font-bold ml-0 group-hover:ml-2 text-white">
+                  Access Board
+                </span>
+              </button>
+
+              {/* Special Board Panel Overlay */}
+              {isBoardOpen && (
+                <div 
+                  className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end transition-opacity duration-300"
+                  onClick={() => setIsBoardOpen(false)}
+                >
+                  <div 
+                    className="w-full max-w-md bg-white h-full shadow-2xl flex flex-col transition-transform duration-300"
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {/* Header */}
+                    <div className="p-6 flex justify-between items-center text-white animate-fade-in" style={{ background: 'linear-gradient(135deg, #4C1D95 0%, #1E1B4B 100%)' }}>
+                      <div className="flex items-center space-x-2">
+                        <Sparkles className="w-6 h-6 text-yellow-300" />
+                        <div>
+                          <h2 className="font-serif font-black text-xl tracking-tight text-white">Control Hub</h2>
+                          <p className="text-xs text-purple-200">System Mode: {role.toUpperCase()}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setIsBoardOpen(false)}
+                        className="text-white/80 hover:text-white hover:bg-white/10 p-1.5 rounded-full transition-colors cursor-pointer border-0 bg-transparent"
+                      >
+                        <X className="w-6 h-6" />
+                      </button>
+                    </div>
+
+                    {/* Body */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                      {/* Active User profile card */}
+                      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Authenticated User</span>
+                        <div className="flex items-center space-x-3">
+                          <div className="p-2.5 bg-purple-100 rounded-full text-purple-700">
+                            <ShieldAlert className="w-6 h-6" />
+                          </div>
+                          <div className="overflow-hidden">
+                            <div className="font-bold text-gray-900 text-sm truncate max-w-[280px]">{user.email}</div>
+                            <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5 font-bold">
+                              <span className="inline-block w-2.5 h-2.5 bg-green-500 rounded-full"></span> Role: <span className="font-semibold text-purple-700 capitalize">{role}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Navigation list */}
+                      <div>
+                        <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">System Navigation</span>
+                        <div className="grid grid-cols-2 gap-3">
+                          <Link 
+                            to="/admin" 
+                            onClick={() => setIsBoardOpen(false)}
+                            className="p-4 bg-purple-50 border border-purple-100 rounded-lg hover:bg-purple-100 hover:border-purple-200 transition-all text-center flex flex-col items-center justify-center gap-2 group cursor-pointer text-decoration-none"
+                          >
+                            <Activity className="w-6 h-6 text-purple-750 group-hover:scale-110 transition-transform" />
+                            <span className="text-xs font-bold text-purple-900">Articles Panel</span>
+                          </Link>
+                          <Link 
+                            to="/admin" 
+                            state={{ tab: 'users' }}
+                            onClick={() => setIsBoardOpen(false)}
+                            className="p-4 bg-indigo-50 border border-indigo-100 rounded-lg hover:bg-indigo-100 hover:border-indigo-200 transition-all text-center flex flex-col items-center justify-center gap-2 group cursor-pointer text-decoration-none"
+                          >
+                            <Users className="w-6 h-6 text-indigo-600 group-hover:scale-110 transition-transform" />
+                            <span className="text-xs font-bold text-indigo-900">User Manager</span>
+                          </Link>
+                        </div>
+                      </div>
+
+                      {/* Developer specific promo board */}
+                      {role === 'dev' && (
+                        <div className="border border-red-200 bg-red-50/50 p-4 rounded-lg space-y-3">
+                          <div className="flex items-center space-x-2 text-red-700">
+                            <Award className="w-5 h-5 font-bold" />
+                            <span className="text-sm font-bold">Developer Promotion Tools</span>
+                          </div>
+                          <p className="text-xs text-gray-600 leading-normal">
+                            You have Developer credentials. You can view all users, modify roles, and promote any user directly to **Admin** or **Dev** status.
+                          </p>
+                          <Link 
+                            to="/admin"
+                            state={{ tab: 'users' }}
+                            onClick={() => setIsBoardOpen(false)}
+                            className="w-full block text-center bg-red-650 hover:bg-red-750 text-white py-2 rounded text-xs font-bold transition-all shadow-sm text-decoration-none"
+                          >
+                            Promote Users to Admin
+                          </Link>
+                        </div>
+                      )}
+
+                      {/* Live System Stats */}
+                      <div>
+                        <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Live Statistics</span>
+                        <div className="bg-gray-50 border border-gray-200 rounded-lg divide-y divide-gray-200">
+                          <div className="p-3.5 flex justify-between items-center text-sm">
+                            <span className="text-gray-600 flex items-center gap-1.5"><FileText className="w-4 h-4 text-gray-400" /> Active Articles</span>
+                            <span className="font-bold text-gray-900">{articles.length}</span>
+                          </div>
+                          <div className="p-3.5 flex justify-between items-center text-sm">
+                            <span className="text-gray-600 flex items-center gap-1.5"><ShieldAlert className="w-4 h-4 text-gray-400" /> Clearance Level</span>
+                            <span className="px-2.5 py-0.5 bg-purple-100 text-purple-800 rounded text-xs font-bold uppercase">{role}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-6 border-t border-gray-150 bg-gray-50 text-center">
+                      <button 
+                        onClick={async () => { await logout(); setIsBoardOpen(false); }}
+                        className="text-red-650 hover:text-red-800 font-bold text-sm flex items-center justify-center gap-1.5 w-full py-2.5 border border-red-200 hover:bg-red-50 rounded transition-colors cursor-pointer bg-transparent"
+                      >
+                        <LogOut className="w-4 h-4" /> Sign Out from System
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </Router>
+    </ArticleContext.Provider>
+  );
+}
+
+export default function App() {
+  return (
     <HelmetProvider>
-      <ArticleContext.Provider value={{ articles, loading, refetch: fetchArticles }}>
-        <Router>
-          <ScrollToTop />
-          <div className="min-h-screen flex flex-col">
-            <Header />
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/article/:id" element={<ArticlePage />} />
-              <Route path="/admin" element={<AdminDashboard />} />
-              <Route path="/newsletters" element={<StaticPage title="Newsletters" />} />
-              <Route path="/about" element={<StaticPage title="Our Story" />} />
-              <Route path="/careers" element={<StaticPage title="Careers" />} />
-              <Route path="/ethics" element={<StaticPage title="Journalistic Ethics" />} />
-              <Route path="/contact" element={<StaticPage title="Contact Us" />} />
-              <Route path="/terms" element={<StaticPage title="Terms of Service" />} />
-              <Route path="/privacy" element={<StaticPage title="Privacy Policy" />} />
-              <Route path="/cookies" element={<StaticPage title="Cookie Policy" />} />
-              <Route path="/accessibility" element={<StaticPage title="Accessibility" />} />
-            </Routes>
-            <Footer />
-          </div>
-        </Router>
-      </ArticleContext.Provider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </HelmetProvider>
   );
 }
