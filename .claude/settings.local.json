@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cloudflared tunnel:*)"
+      "Bash(cloudflared tunnel:*)",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"%{http_code}\")"
     ]
   }
 }
