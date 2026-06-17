@@ -360,4 +360,4 @@ on conflict (id) do update set
   slug = excluded.slug,
   category_id = excluded.category_id,
   author_id = excluded.author_id,
-  "publishedAt" = excluded."publishedAt";
+  published_at = excluded.published_at;
