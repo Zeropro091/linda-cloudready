@@ -12,7 +12,10 @@
       "Bash(taskkill:*)",
       "Bash(curl -s http://localhost:3000 -o /dev/null -w \"HTTP: %{http_code}\")",
       "Bash(echo \"Tunnel PID: $!\")",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(supabase stop:*)",
+      "Bash(supabase start:*)",
+      "Bash(docker rm:*)"
     ]
   }
 }
