@@ -6,7 +6,8 @@
       "Bash(NODE_ENV=production node --import tsx/esm server.ts)",
       "Bash(echo \"PID: $!\")",
       "Bash(ls:*)",
-      "Bash(pkill -f \"node --import tsx/esm server.ts\")"
+      "Bash(pkill -f \"node --import tsx/esm server.ts\")",
+      "Bash(echo \"Started PID: $!\")"
     ]
   }
 }
