@@ -82,6 +82,9 @@ INSERT INTO public.profiles (id, email, role, quota)
 VALUES ('00000000-0000-0000-0000-000000000004', 'user@user.com', 'user', 5)
 ON CONFLICT (id) DO UPDATE SET role = 'user', quota = 5;
 
+-- Disable FK checks so seed order doesn't matter
+SET session_replication_role = 'replica';
+
 -- Seed categories with fixed UUIDs
 INSERT INTO public.categories (id, slug, name, level, sort_order) VALUES
   ('aaaaaaaa-0000-0000-0000-000000000001', 'business', 'Business', 0, 1),
