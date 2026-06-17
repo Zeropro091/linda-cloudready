@@ -1,0 +1,7 @@
+tunnel: dc6820e6-043b-4fa4-ac16-9960157efd89
+credentials-file: C:\Users\Putu Ari\.cloudflared\dc6820e6-043b-4fa4-ac16-9960157efd89.json
+
+ingress:
+  - hostname: lensainsignia.com
+    service: http://localhost:3000  # port app kamu
+  - service: http_status:404

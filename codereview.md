@@ -197,6 +197,8 @@ The project uses TypeScript but runs with `skipLibCheck: true` and heavy relianc
 | 3 | `ad_sponsors` `image_url`/`target_url` NOT NULL constraint violated on save | Fixed null coalescing to send empty strings instead of `null` |
 | 4 | Slow SSR page loads with no caching | In-memory 30s TTL cache + stale fallback in `entry-server.tsx` |
 | 5 | Multiple AdSlot instances fire N parallel Supabase queries | Promise dedup + 30s TTL cache + stale fallback in `App.tsx` |
+| 6 | All AdSlots started at index 0 — showed the same sponsor | Slot ID counter distributes starting indices via `slotIdRef % fetched.length` |
+| 7 | Frequency gate used `fetched[0].frequency` for all slots | Each sponsor's own frequency used; re-evaluated on rotation |
 
 ---
 
@@ -298,6 +300,8 @@ The project uses TypeScript but runs with `skipLibCheck: true` and heavy relianc
 
 **Recommendations:**
 1. ✅ **Done** — In-memory SSR cache with 30s TTL and stale fallback added to `entry-server.tsx`. Also added `AdSlot` sponsor caching with promise dedup in `App.tsx`.
+2. ✅ **Done** — AdSlot slot distribution via unique slot IDs ensures different slots show different sponsors.
+3. ✅ **Done** — Per-sponsor frequency gate: each sponsor controls its own visibility via its `frequency` field, re-evaluated on rotation.
 2. Consider streaming SSR or prioritized loading for article detail pages.
 
 ---
@@ -413,6 +417,8 @@ The project uses TypeScript but runs with `skipLibCheck: true` and heavy relianc
 | — | **Add server-side caching** for SSR article queries (30s TTL + stale fallback) | Performance/SEO | 30 min | `src/entry-server.tsx` |
 | — | **Add AdSlot sponsor cache** with promise dedup and stale fallback | Performance | 15 min | `src/App.tsx` |
 | — | **Fix sponsor null constraint** (`image_url`/`target_url` sending `null` instead of empty string) | Bug Fix | 5 min | `src/pages/AdminDashboard.tsx` |
+| — | **Fix AdSlot slot distribution** — all slots started at index 0, showing the same sponsor | Ad System | 15 min | `src/App.tsx` |
+| — | **Fix per-sponsor frequency gate** — used `fetched[0].frequency` for all slots instead of each sponsor's own frequency | Ad System | 15 min | `src/App.tsx` |
 
 ### 🔴 Critical (Fix ASAP)
 
