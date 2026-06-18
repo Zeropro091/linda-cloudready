@@ -747,9 +747,9 @@ const HomePage = () => {
       
       const scoredResults = result.map(a => {
         let score = 0;
-        const titleCat = `${a.title} ${a.category}`.toLowerCase();
+        const titleCat = `${a.title} ${a.category} ${a.author}`.toLowerCase();
         const contentFallback = a.contentStr || (a.contentArr ? a.contentArr.join(' ') : (a.content ? a.content.join(' ') : ''));
-        const fullText = `${a.title} ${a.subtitle} ${a.excerpt} ${a.category} ${contentFallback}`.toLowerCase();
+        const fullText = `${a.title} ${a.subtitle} ${a.excerpt} ${a.category} ${a.author} ${contentFallback}`.toLowerCase();
         
         // Exact full phrase match (highest priority)
         if (titleCat.includes(q)) score += 50;

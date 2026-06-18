@@ -124,15 +124,19 @@ async function createServer() {
     app.use(sirv(path.resolve(__dirname, 'dist/client'), { extensions: [] }));
   }
 
-  /** Robust XML escaping for sitemaps */
+  /** Robust XML escaping for sitemaps — strips control chars, newlines, tabs */
   function xmlEscape(str: string): string {
-    return str.replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&apos;'
-    }[m] || m));
+    return str
+      .replace(/[\x00-\x1F\x7F]/g, ' ')  // strip control chars (newlines, tabs, etc.)
+      .replace(/\s+/g, ' ')               // collapse whitespace
+      .trim()
+      .replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&apos;'
+      }[m] || m));
   }
 
   /** Build a minimal sitemap with static pages only (fallback when DB is unavailable). */
