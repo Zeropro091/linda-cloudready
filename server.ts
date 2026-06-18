@@ -58,6 +58,53 @@ async function createServer() {
   });
   app.use(['/rest/v1', '/auth/v1', '/storage/v1', '/realtime/v1'], supabaseProxy);
 
+  // ── Scheduled Article Auto-Publisher ──
+  // Every 60 seconds, publish articles whose scheduled_at has passed
+  const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+  const publishScheduled = async () => {
+    try {
+      const now = new Date().toISOString();
+      const url = `${SUPABASE_LOCAL}/rest/v1/articles?status=eq.scheduled&scheduled_at=lte.${now}&select=id,title`;
+      const listRes = await fetch(url, {
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation',
+        },
+      });
+      if (!listRes.ok) return;
+      const due: any[] = await listRes.json();
+      if (due.length === 0) return;
+
+      // Bulk update to published
+      const patchUrl = `${SUPABASE_LOCAL}/rest/v1/articles?status=eq.scheduled&scheduled_at=lte.${now}`;
+      const patchRes = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({
+          status: 'published',
+          published_at: now,
+        }),
+      });
+      if (patchRes.ok) {
+        console.log(`[Scheduler] Auto-published ${due.length} article(s): ${due.map(a => a.title).join(', ')}`);
+      }
+    } catch (e: any) {
+      // Silent fail — scheduler runs in background
+      console.warn('[Scheduler] Error:', e.message);
+    }
+  };
+  // Run every 60 seconds
+  setInterval(publishScheduled, 60_000);
+  // Also run once on startup after a short delay
+  setTimeout(publishScheduled, 5_000);
+
   let vite: any;
 
   if (!isProduction) {
@@ -100,6 +147,121 @@ async function createServer() {
     xml += `</urlset>`;
     return xml;
   }
+
+  // --- OG Image Generator ---
+  // Generate social share card images for articles: GET /og/:articleId.png
+  const ogCache = new Map<string, { buffer: Buffer; ts: number }>();
+  const OG_CACHE_TTL = 3600_000; // 1 hour
+  const OG_MAX_CACHE = 100;
+
+  app.get('/og/:articleId.png', async (req, res) => {
+    try {
+      const { articleId } = req.params;
+
+      // Check cache
+      const cached = ogCache.get(articleId);
+      if (cached && Date.now() - cached.ts < OG_CACHE_TTL) {
+        res.set({ 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
+        return res.send(cached.buffer);
+      }
+
+      // Fetch article from Supabase
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const articleRes = await fetch(
+        `${supabaseUrl}/rest/v1/articles?id=eq.${articleId}&select=title,category,author,date,excerpt`,
+        {
+          headers: {
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${SUPABASE_KEY}`,
+          },
+        }
+      );
+
+      if (!articleRes.ok) return res.status(404).send('Not found');
+      const articles: any[] = await articleRes.json();
+      if (articles.length === 0) return res.status(404).send('Not found');
+
+      const article = articles[0];
+      const title = (article.title || 'Untitled').slice(0, 100);
+      const category = (article.category || '').toUpperCase();
+      const author = article.author || '';
+      const date = article.date || '';
+
+      // Word-wrap title into lines
+      const maxCharsPerLine = 32;
+      const words = title.split(' ');
+      const lines: string[] = [];
+      let currentLine = '';
+      for (const word of words) {
+        if ((currentLine + ' ' + word).trim().length > maxCharsPerLine && currentLine) {
+          lines.push(currentLine.trim());
+          currentLine = word;
+        } else {
+          currentLine = currentLine ? currentLine + ' ' + word : word;
+        }
+      }
+      if (currentLine.trim()) lines.push(currentLine.trim());
+      const titleLines = lines.slice(0, 3); // Max 3 lines
+
+      // XML-escape for SVG
+      const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+      const titleSvg = titleLines.map((line, i) =>
+        `<text x="80" y="${260 + i * 70}" font-family="Georgia, serif" font-size="56" font-weight="bold" fill="white">${esc(line)}</text>`
+      ).join('\n');
+
+      const svg = `<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f0f"/>
+      <stop offset="50%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#b91c1c"/>
+      <stop offset="100%" style="stop-color:#ef4444"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- Accent bar top -->
+  <rect x="0" y="0" width="1200" height="6" fill="url(#accent)"/>
+  <!-- Category badge -->
+  ${category ? `<rect x="80" y="80" width="${category.length * 14 + 32}" height="34" rx="4" fill="#b91c1c"/>
+  <text x="96" y="103" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="white" letter-spacing="2">${esc(category)}</text>` : ''}
+  <!-- Title -->
+  ${titleSvg}
+  <!-- Divider -->
+  <rect x="80" y="${280 + titleLines.length * 70}" width="60" height="3" rx="1.5" fill="#b91c1c"/>
+  <!-- Author & Date -->
+  <text x="80" y="${330 + titleLines.length * 70}" font-family="Inter, sans-serif" font-size="22" fill="#a0a0a0">${esc(author)}${date ? ` · ${esc(date)}` : ''}</text>
+  <!-- Branding -->
+  <text x="80" y="580" font-family="Georgia, serif" font-size="28" font-weight="bold" fill="#555">Lensa Insignia</text>
+  <text x="1120" y="580" font-family="Inter, sans-serif" font-size="14" fill="#444" text-anchor="end">lensainsignia.com</text>
+  <!-- Bottom accent bar -->
+  <rect x="0" y="624" width="1200" height="6" fill="url(#accent)"/>
+</svg>`;
+
+      // Convert SVG to PNG using sharp
+      const sharpMod = await import('sharp');
+      const sharpFn = sharpMod.default || sharpMod;
+      const pngBuffer = await sharpFn(Buffer.from(svg))
+        .png({ quality: 90 })
+        .toBuffer();
+
+      // Cache (LRU eviction)
+      if (ogCache.size >= OG_MAX_CACHE) {
+        const oldestKey = ogCache.keys().next().value;
+        if (oldestKey) ogCache.delete(oldestKey);
+      }
+      ogCache.set(articleId, { buffer: pngBuffer, ts: Date.now() });
+
+      res.set({ 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
+      res.send(pngBuffer);
+    } catch (err: any) {
+      console.error('[OG Image] Error:', err.message);
+      res.status(500).send('OG image generation failed');
+    }
+  });
 
   // --- News Sitemap endpoint (Google News) — articles from last 48 hours only ---
   app.get('/news-sitemap.xml', async (_req, res) => {
@@ -230,10 +392,11 @@ async function createServer() {
     const isRoot = url === '/';
     const isCategory = url.startsWith('/category/') && CATEGORIES.includes(url.split('/')[2]);
     const isArticle = url.startsWith('/article/'); // Dynamic, assume valid pattern for now
+    const isAuthor = url.startsWith('/author/');   // Author profile pages
     const isStatic = staticPages.includes(url.slice(1));
     const isAuth = authPages.includes(url.slice(1));
 
-    const isValidRoute = isRoot || isCategory || isArticle || isStatic || isAuth;
+    const isValidRoute = isRoot || isCategory || isArticle || isAuthor || isStatic || isAuth;
 
     try {
       let template: string;

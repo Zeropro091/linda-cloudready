@@ -11,6 +11,16 @@
   --color-accent: #b91c1c; /* A classic editorial red */
 }
 
+/* ── Dark Mode ── */
+html.dark {
+  --color-paper: #0f0f0f;
+  --color-ink: #e8e8e8;
+  --color-ink-light: #a0a0a0;
+  --color-border: #2a2a2a;
+  --color-accent: #ef4444;
+  color-scheme: dark;
+}
+
 body {
   background-color: var(--color-paper);
   color: var(--color-ink);
@@ -95,4 +105,47 @@ h1, h2, h3, h4, h5, h6 {
 
 .animate-spin-slow {
   animation: spin 8s linear infinite;
+}
+
+/* ── Dark Mode Overrides for hardcoded Tailwind colors ── */
+html.dark .bg-white { background-color: #1a1a1a !important; }
+html.dark .bg-gray-50 { background-color: #151515 !important; }
+html.dark .bg-gray-100 { background-color: #1f1f1f !important; }
+html.dark .bg-gray-200 { background-color: #2a2a2a !important; }
+html.dark .border-gray-200,
+html.dark .border-gray-300 { border-color: #2a2a2a !important; }
+html.dark .text-gray-500 { color: #888 !important; }
+html.dark .text-gray-400 { color: #777 !important; }
+html.dark .text-gray-700 { color: #ccc !important; }
+html.dark .text-gray-800 { color: #ddd !important; }
+html.dark .hover\:bg-gray-100:hover { background-color: #252525 !important; }
+html.dark .hover\:bg-gray-200:hover { background-color: #303030 !important; }
+html.dark .border-border { border-color: var(--color-border) !important; }
+
+/* Dark mode: ad placeholder */
+html.dark .ad-placeholder {
+  background-image: repeating-linear-gradient(45deg, #1a1a1a, #1a1a1a 10px, #222 10px, #222 20px);
+  border-color: #333;
+  color: #555;
+}
+
+/* Dark mode: prose/article content */
+html.dark .prose { color: var(--color-ink) !important; }
+html.dark .prose h1, html.dark .prose h2, html.dark .prose h3,
+html.dark .prose h4, html.dark .prose h5, html.dark .prose h6 { color: var(--color-ink) !important; }
+html.dark .prose a { color: var(--color-accent) !important; }
+html.dark .prose strong { color: var(--color-ink) !important; }
+html.dark .prose blockquote { border-color: var(--color-border) !important; color: var(--color-ink-light) !important; }
+html.dark .prose code { background-color: #1f1f1f !important; color: #e8e8e8 !important; }
+html.dark .prose pre { background-color: #1a1a1a !important; }
+
+/* Dark mode: mobile anchor ad bar */
+html.dark .bg-white\/95 { background-color: rgba(15,15,15,0.95) !important; }
+
+/* Dark mode: footer */
+html.dark footer { background-color: #0a0a0a !important; }
+
+/* Smooth transition for dark mode toggle */
+body, header, footer, aside, main, .bg-white, .bg-gray-50 {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
 }

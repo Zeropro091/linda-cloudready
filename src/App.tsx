@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { Helmet, HelmetProvider } from 'react-helmet-async';
-import { Search, Menu, ChevronRight, Mail, Share2, Twitter, Facebook, Linkedin, Link as LinkIcon, X, CheckCircle2, LogOut, Sparkles, Users, FileText, Activity, ShieldAlert, Award } from 'lucide-react';
+import { Search, Menu, ChevronRight, Mail, Share2, Twitter, Facebook, Linkedin, Link as LinkIcon, X, CheckCircle2, LogOut, Sparkles, Users, FileText, Activity, ShieldAlert, Award, Moon, Sun, Bookmark, BookmarkCheck } from 'lucide-react';
 
 // Admin and auth pages are client-only — lazy load them so SSR never touches
 // their dependencies (MDEditor, etc.) which have ESM circular dep issues.
@@ -16,6 +16,7 @@ const RegisterPage = React.lazy(() => import('./pages/RegisterPage'));
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
 const BecomeWriterPage = React.lazy(() => import('./pages/BecomeWriterPage'));
 const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
+const AuthorPage = React.lazy(() => import('./pages/AuthorPage'));
 
 import CategoryPage from './pages/CategoryPage';
 import NotFoundPage from './pages/NotFoundPage';
@@ -32,6 +33,50 @@ export const ArticleContext = React.createContext<{ articles: any[], loading: bo
 });
 
 export const useArticles = () => React.useContext(ArticleContext);
+
+// --- Bookmarks Hook ---
+const useBookmarks = () => {
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
+  const { user } = useAuth();
+
+  const fetchBookmarks = useCallback(async () => {
+    if (!user) { setBookmarkedIds(new Set()); return; }
+    try {
+      const { data } = await supabase
+        .from('bookmarks')
+        .select('article_id')
+        .eq('user_id', user.id);
+      setBookmarkedIds(new Set((data || []).map((b: any) => b.article_id)));
+    } catch { /* silent */ }
+  }, [user]);
+
+  useEffect(() => { fetchBookmarks(); }, [fetchBookmarks]);
+
+  const toggleBookmark = useCallback(async (articleId: string) => {
+    if (!user) return;
+    const isBookmarked = bookmarkedIds.has(articleId);
+    // Optimistic update
+    setBookmarkedIds(prev => {
+      const next = new Set(prev);
+      isBookmarked ? next.delete(articleId) : next.add(articleId);
+      return next;
+    });
+    try {
+      if (isBookmarked) {
+        await supabase.from('bookmarks').delete().eq('user_id', user.id).eq('article_id', articleId);
+      } else {
+        await supabase.from('bookmarks').insert({ user_id: user.id, article_id: articleId });
+      }
+    } catch {
+      // Revert on error
+      fetchBookmarks();
+    }
+  }, [user, bookmarkedIds, fetchBookmarks]);
+
+  const isBookmarked = useCallback((articleId: string) => bookmarkedIds.has(articleId), [bookmarkedIds]);
+
+  return { bookmarkedIds, toggleBookmark, isBookmarked, refetch: fetchBookmarks };
+};
 
 // --- Mock Data ---
 const CATEGORIES = ['World', 'Politics', 'Business', 'Tech', 'Science', 'Health', 'Sports', 'Arts', 'Opinion'];
@@ -360,6 +405,22 @@ const Header = () => {
     }
   };
   
+  // Dark mode
+  const [isDark, setIsDark] = useState(false);
+  useEffect(() => {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+      setIsDark(true);
+    }
+  }, []);
+  const toggleDarkMode = () => {
+    const next = !isDark;
+    setIsDark(next);
+    document.documentElement.classList.toggle('dark', next);
+    localStorage.setItem('theme', next ? 'dark' : 'light');
+  };
+
   return (
     <>
       <header className={`w-full bg-paper border-b border-border sticky top-0 z-50 transition-transform duration-500 ease-in-out ${isVisible ? 'translate-y-0' : '-translate-y-full'}`}>
@@ -395,6 +456,13 @@ const Header = () => {
                 <Link to="/register" className="hover:text-ink transition-colors font-bold bg-ink text-paper px-3 py-1 text-xs uppercase tracking-wider hover:bg-ink-light">Register</Link>
               </div>
             )}
+            <button
+              onClick={toggleDarkMode}
+              className="p-1.5 rounded-full hover:bg-gray-100 transition-colors"
+              aria-label="Toggle dark mode"
+            >
+              {isDark ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
             <Link to="/newsletters" className="hover:text-ink transition-colors">Newsletters</Link>
           </div>
         </div>
@@ -663,6 +731,8 @@ const HomePage = () => {
   const category = searchParams.get('category');
   const query = searchParams.get('q');
   const { articles } = useArticles();
+  const { user } = useAuth();
+  const { toggleBookmark, isBookmarked } = useBookmarks();
 
   const filteredArticles = useMemo(() => {
     let result = articles;
@@ -780,8 +850,17 @@ const HomePage = () => {
                       {article.title}
                     </h3>
                     <p className="text-sm text-ink-light mb-4 line-clamp-2">{article.excerpt}</p>
-                    <div className="mt-auto text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 border-t border-border">
-                      {article.time}
+                    <div className="mt-auto flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 border-t border-border">
+                      <span>{article.time}</span>
+                      {user && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleBookmark(article.id); }}
+                          className={`p-1 rounded transition-colors ${isBookmarked(article.id) ? 'text-accent' : 'text-gray-400 hover:text-gray-600'}`}
+                          aria-label="Bookmark"
+                        >
+                          {isBookmarked(article.id) ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}
+                        </button>
+                      )}
                     </div>
                   </article>
                 </Link>
@@ -932,6 +1011,8 @@ const ArticlePage = () => {
   const { id } = useParams();
   const [copied, setCopied] = useState(false);
   const { articles, loading } = useArticles();
+  const { user } = useAuth();
+  const { toggleBookmark, isBookmarked } = useBookmarks();
   
   const article = articles.find(a => a.id === id);
 
@@ -1008,7 +1089,7 @@ const ArticlePage = () => {
         title={article.title} 
         description={article.excerpt} 
         type="article"
-        imageUrl={article.imageUrl}
+        imageUrl={`${getOrigin()}/og/${article.id}.png`}
         author={article.author}
         datePublished={article.createdAt ? new Date(article.createdAt).toISOString() : undefined}
         schemaMarkup={{
@@ -1067,7 +1148,7 @@ const ArticlePage = () => {
                   <img src={`https://api.dicebear.com/7.x/notionists/svg?seed=${article.author}`} alt={article.author} loading="lazy" decoding="async" width="48" height="48" className="w-full h-full object-cover" />
                 </div>
                 <div>
-                  <div className="font-bold text-ink">{article.author}</div>
+                  <Link to={`/author/${encodeURIComponent(article.author)}`} className="font-bold text-ink hover:text-accent transition-colors">{article.author}</Link>
                   <div className="text-xs text-ink-light">{article.role}</div>
                 </div>
               </div>
@@ -1088,6 +1169,15 @@ const ArticlePage = () => {
                       </span>
                     )}
                   </button>
+                  {user && (
+                    <button
+                      onClick={() => toggleBookmark(article.id)}
+                      className={`flex items-center justify-center w-9 h-9 rounded-full transition-colors ${isBookmarked(article.id) ? 'bg-accent text-white' : 'bg-gray-100 hover:bg-gray-200'}`}
+                      aria-label={isBookmarked(article.id) ? 'Remove bookmark' : 'Bookmark article'}
+                    >
+                      {isBookmarked(article.id) ? <BookmarkCheck className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1481,6 +1571,7 @@ function AppContent({ initialArticles }: { initialArticles?: any[] }) {
             <Route path="/admin" element={<DashboardPage />} />
 
             {/* Category pages */}
+            <Route path="/author/:name" element={<AuthorPage />} />
             <Route path="/category/:slug" element={<CategoryPage />} />
 
             {/* Static pages */}

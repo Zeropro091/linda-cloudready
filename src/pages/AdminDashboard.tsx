@@ -628,6 +628,13 @@ export default function AdminDashboard() {
         basePayload.published_at = src.published_at || new Date().toISOString();
       }
 
+      // Set scheduled_at when scheduling
+      if (articleStatus === 'scheduled' && src.scheduled_at) {
+        basePayload.scheduled_at = new Date(src.scheduled_at).toISOString();
+      } else {
+        basePayload.scheduled_at = null;
+      }
+
       const now = new Date().toISOString();
 
       if (src.id) {
@@ -922,9 +929,20 @@ export default function AdminDashboard() {
                         <td className="p-3 text-sm">{article.category}</td>
                         <td className="p-3 text-sm">{article.date}</td>
                         <td className="p-3 text-sm">
-                          <span className={`px-2 py-1 rounded text-xs font-bold ${article.status === 'archived' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
-                            {article.status ? article.status.toUpperCase() : 'PUBLISHED'}
-                          </span>
+                          {(() => {
+                            const s = article.status || 'published';
+                            const badge: Record<string, string> = {
+                              published: 'bg-green-100 text-green-800',
+                              draft: 'bg-gray-100 text-gray-600',
+                              scheduled: 'bg-indigo-100 text-indigo-700',
+                              archived: 'bg-yellow-100 text-yellow-800',
+                            };
+                            return (
+                              <span className={`px-2 py-1 rounded text-xs font-bold ${badge[s] || badge.draft}`}>
+                                {s === 'scheduled' ? `⏰ ${article.scheduled_at ? new Date(article.scheduled_at).toLocaleDateString() : 'SCHEDULED'}` : s.toUpperCase()}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="p-3 flex justify-end space-x-2 text-right">
                            <button onClick={() => openModal(article)} className="p-1.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 cursor-pointer border-0" title="Edit"><Edit2 size={16} /></button>
@@ -1059,9 +1077,9 @@ export default function AdminDashboard() {
                     <button type="button" onClick={closeModal} className="p-1.5 rounded hover:bg-gray-200 transition-colors" style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>
                       <X size={18} className="text-gray-500" />
                     </button>
-                    <div className="w-2 h-2 rounded-full" style={{ background: editingArticle.status === 'published' ? '#1D9E75' : '#f59e0b' }} />
+                    <div className="w-2 h-2 rounded-full" style={{ background: editingArticle.status === 'published' ? '#1D9E75' : editingArticle.status === 'scheduled' ? '#6366f1' : editingArticle.status === 'archived' ? '#eab308' : '#f59e0b' }} />
                     <span style={{ fontSize: 12, color: '#6b7280' }}>
-                      {editingArticle.id ? 'Editing' : 'New'} — {editingArticle.status || 'draft'}
+                      {editingArticle.id ? 'Editing' : 'New'} — {editingArticle.status === 'scheduled' ? `⏰ Scheduled` : (editingArticle.status || 'draft')}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1309,11 +1327,41 @@ export default function AdminDashboard() {
                 {/* Status */}
                 <div style={{ padding: 16, borderBottom: '1px solid #e5e7eb' }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Status</div>
-                  <select value={editingArticle.status || 'draft'} onChange={e => setEditingArticle({ ...editingArticle, status: e.target.value })} style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 13, outline: 'none', background: '#fff', color: '#374151' }}>
+                  <select value={editingArticle.status || 'draft'} onChange={e => {
+                    const newStatus = e.target.value;
+                    const update: any = { ...editingArticle, status: newStatus };
+                    if (newStatus === 'scheduled' && !update.scheduled_at) {
+                      // Default to 1 hour from now
+                      const d = new Date(Date.now() + 3600000);
+                      update.scheduled_at = d.toISOString().slice(0, 16);
+                    }
+                    if (newStatus !== 'scheduled') {
+                      update.scheduled_at = null;
+                    }
+                    setEditingArticle(update);
+                  }} style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 13, outline: 'none', background: '#fff', color: '#374151' }}>
                     <option value="draft">Draft</option>
                     <option value="published">Published</option>
+                    <option value="scheduled">⏰ Scheduled</option>
                     <option value="archived">Archived</option>
                   </select>
+                  {editingArticle.status === 'scheduled' && (
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: '#6366f1', display: 'block', marginBottom: 4 }}>Publish At</label>
+                      <input
+                        type="datetime-local"
+                        value={editingArticle.scheduled_at || ''}
+                        onChange={e => setEditingArticle({ ...editingArticle, scheduled_at: e.target.value })}
+                        min={new Date().toISOString().slice(0, 16)}
+                        style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #6366f1', fontSize: 13, outline: 'none', background: '#eef2ff', color: '#374151' }}
+                      />
+                      {editingArticle.scheduled_at && (
+                        <div style={{ fontSize: 11, color: '#6366f1', marginTop: 4 }}>
+                          Will auto-publish {new Date(editingArticle.scheduled_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Excerpt / SEO */}
