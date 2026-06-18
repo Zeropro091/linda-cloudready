@@ -7,7 +7,8 @@ import { Link } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { Bookmark, ArrowLeft, Trash2 } from 'lucide-react';
 import { useArticles } from '../App';
-import { useAuth, supabase } from '../lib/auth';
+import { useAuth } from '../components/AuthProvider';
+import { supabase } from '../lib/supabase';
 
 const BookmarksPage = () => {
   const { articles, loading: articlesLoading } = useArticles();

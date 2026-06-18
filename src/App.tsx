@@ -18,6 +18,7 @@ const BecomeWriterPage = React.lazy(() => import('./pages/BecomeWriterPage'));
 const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
 const AuthorPage = React.lazy(() => import('./pages/AuthorPage'));
 const BookmarksPage = React.lazy(() => import('./pages/BookmarksPage'));
+const StockFinderPage = React.lazy(() => import('./pages/StockFinderPage'));
 
 import CategoryPage from './pages/CategoryPage';
 import NotFoundPage from './pages/NotFoundPage';
@@ -1585,6 +1586,9 @@ function AppContent({ initialArticles }: { initialArticles?: any[] }) {
             <Route path="/author/:name" element={<AuthorPage />} />
             <Route path="/saved" element={<BookmarksPage />} />
             <Route path="/category/:slug" element={<CategoryPage />} />
+
+            {/* Tools */}
+            <Route path="/tools/stockfinder" element={<StockFinderPage />} />
 
             {/* Static pages */}
             <Route path="/newsletters" element={<StaticPage title="Newsletters" />} />

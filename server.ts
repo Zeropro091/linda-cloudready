@@ -500,6 +500,322 @@ async function createServer() {
     }
   });
 
+  // ═══════════════════════════════════════════════════════════
+  // StockFinder AI — API Endpoints
+  // ═══════════════════════════════════════════════════════════
+
+  /** SHA-256 hash helper for API key comparison */
+  const hashKey = async (key: string): Promise<string> => {
+    const { createHash } = await import('node:crypto');
+    return createHash('sha256').update(key).digest('hex');
+  };
+
+  /** Validate an API key and return its record + daily usage */
+  const validateStockfinderKey = async (apiKey: string) => {
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+    const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+    const keyHash = await hashKey(apiKey);
+    const { data: keyRow } = await supabase
+      .from('stockfinder_api_keys')
+      .select('*')
+      .eq('key_hash', keyHash)
+      .eq('is_active', true)
+      .single();
+
+    if (!keyRow) return null;
+
+    // Check expiry
+    if (keyRow.expires_at && new Date(keyRow.expires_at) < new Date()) return null;
+
+    // Count today's usage
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { count } = await supabase
+      .from('stockfinder_usage_logs')
+      .select('id', { count: 'exact', head: true })
+      .eq('key_id', keyRow.id)
+      .gte('created_at', todayStart.toISOString());
+
+    const usedToday = count || 0;
+    return { ...keyRow, usedToday, remainingToday: Math.max(0, keyRow.daily_limit - usedToday) };
+  };
+
+  // --- POST /api/stockfinder/validate-key ---
+  app.post('/api/stockfinder/validate-key', express.json(), async (req, res) => {
+    try {
+      const { apiKey } = req.body;
+      if (!apiKey) return res.json({ valid: false });
+
+      const keyData = await validateStockfinderKey(apiKey);
+      if (!keyData) return res.json({ valid: false });
+
+      res.json({
+        valid: true,
+        label: keyData.label || '',
+        remainingToday: keyData.remainingToday,
+        dailyLimit: keyData.daily_limit,
+      });
+    } catch (err: any) {
+      console.error('[StockFinder] validate-key error:', err.message);
+      res.status(500).json({ valid: false, error: 'Validation failed' });
+    }
+  });
+
+  // --- POST /api/stockfinder/analyze ---
+  app.post('/api/stockfinder/analyze', express.json(), async (req, res) => {
+    const startTime = Date.now();
+    try {
+      const { url: articleUrl, apiKey } = req.body;
+      if (!articleUrl || !apiKey) {
+        return res.status(400).json({ error: 'Missing url or apiKey' });
+      }
+
+      // 1. Validate API key
+      const keyData = await validateStockfinderKey(apiKey);
+      if (!keyData) {
+        return res.status(401).json({ error: 'Invalid or expired API key' });
+      }
+      if (keyData.remainingToday <= 0) {
+        return res.status(429).json({ error: `Daily limit reached (${keyData.daily_limit}/day). Try again tomorrow.` });
+      }
+
+      // 2. Check Gemini API key
+      const geminiKey = process.env.GEMINI_API_KEY;
+      if (!geminiKey) {
+        return res.status(500).json({ error: 'Gemini API key not configured on server' });
+      }
+
+      // 3. Scrape article content
+      console.log(`[StockFinder] Scraping: ${articleUrl}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const fetchRes = await fetch(articleUrl, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StockFinderAI/1.0)' },
+        redirect: 'follow',
+      });
+      clearTimeout(timeout);
+
+      if (!fetchRes.ok) {
+        return res.status(400).json({ error: `Could not fetch article (HTTP ${fetchRes.status})` });
+      }
+
+      const html = await fetchRes.text();
+      const cheerio = await import('cheerio');
+      const $ = cheerio.load(html);
+
+      // Remove non-content elements
+      $('script, style, nav, header, footer, aside, iframe, form, .ad, .sidebar, .menu, .nav, .advertisement, .social-share, [role="navigation"], [role="banner"], [role="contentinfo"]').remove();
+
+      // Extract title
+      const articleTitle = $('h1').first().text().trim()
+        || $('meta[property="og:title"]').attr('content')
+        || $('title').text().trim()
+        || 'Untitled';
+
+      // Extract main text
+      let articleText = '';
+      $('article, [role="main"], .post-content, .article-body, .entry-content, .content, main').each((_, el) => {
+        articleText += $(el).text() + '\n';
+      });
+      if (!articleText.trim()) {
+        // Fallback: grab all <p> text
+        $('p').each((_, el) => {
+          articleText += $(el).text() + '\n';
+        });
+      }
+
+      articleText = articleText.replace(/\s+/g, ' ').trim();
+      if (articleText.length < 50) {
+        return res.status(400).json({ error: 'Could not extract enough content from the article. The page might be JavaScript-rendered or blocked.' });
+      }
+
+      // Truncate to ~4000 chars for Gemini input
+      const truncatedText = articleText.slice(0, 4000);
+
+      // 4. Call Gemini AI
+      console.log(`[StockFinder] Calling Gemini (text length: ${truncatedText.length})`);
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+
+      const prompt = `You are a professional Photo Editor for a major publication. Analyze this article and suggest stock photos.
+
+Article Title: ${articleTitle}
+Article Text: ${truncatedText}
+
+Provide your response as valid JSON with this exact structure (no markdown, no code fences):
+{
+  "summary": "A 2-3 sentence summary capturing the core topic and mood",
+  "concepts": [
+    {
+      "idea": "Specific visual concept (e.g., 'A lone entrepreneur working at a laptop in a dimly lit coffee shop at night')",
+      "whyItWorks": "Editorial/psychological reasoning for why this image strengthens the article",
+      "searchQuery": "2-4 specific English keywords optimized for stock photo search engines"
+    }
+  ]
+}
+
+Rules:
+- Generate 3-6 concepts, from most to least relevant
+- Each "idea" must be vivid, specific, and cinematic — never generic
+- Each "searchQuery" must be 2-4 English words that would return the best results on Unsplash/Pexels
+- Each "whyItWorks" should explain the visual-editorial connection
+- Respond ONLY with the JSON object, nothing else`;
+
+      const geminiRes = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+
+      // Parse Gemini response
+      let responseText = geminiRes.text || '';
+      // Strip code fences if present
+      responseText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
+      let parsed;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        console.error('[StockFinder] Failed to parse Gemini response:', responseText.slice(0, 500));
+        return res.status(500).json({ error: 'AI returned an invalid response. Please try again.' });
+      }
+
+      // 5. Log usage
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+      await supabase.from('stockfinder_usage_logs').insert({
+        key_id: keyData.id,
+        url_analyzed: articleUrl,
+        article_title: articleTitle.slice(0, 255),
+        concepts_count: parsed.concepts?.length || 0,
+        processing_time_ms: Date.now() - startTime,
+      });
+
+      // Update total_uses and last_used_at
+      await supabase.from('stockfinder_api_keys').update({
+        total_uses: (keyData.total_uses || 0) + 1,
+        last_used_at: new Date().toISOString(),
+      }).eq('id', keyData.id);
+
+      console.log(`[StockFinder] Analysis complete in ${Date.now() - startTime}ms — ${parsed.concepts?.length || 0} concepts`);
+
+      res.json({
+        summary: parsed.summary || '',
+        concepts: parsed.concepts || [],
+        articleTitle,
+      });
+    } catch (err: any) {
+      console.error('[StockFinder] analyze error:', err.message);
+      if (err.name === 'AbortError') {
+        return res.status(408).json({ error: 'Article fetch timed out (15s). The site may be too slow or blocking scrapers.' });
+      }
+      res.status(500).json({ error: err.message || 'Analysis failed' });
+    }
+  });
+
+  // --- StockFinder Admin: API Key Management ---
+  // GET: list all keys | POST: create key | DELETE: revoke key
+  app.get('/api/stockfinder/admin/keys', async (req, res) => {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+      const { data: keys, error } = await supabase
+        .from('stockfinder_api_keys')
+        .select('id, key_prefix, label, is_active, daily_limit, total_uses, created_at, expires_at, last_used_at')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      res.json({ keys: keys || [] });
+    } catch (err: any) {
+      console.error('[StockFinder Admin] list keys error:', err.message);
+      res.status(500).json({ error: 'Failed to list keys' });
+    }
+  });
+
+  app.post('/api/stockfinder/admin/keys', express.json(), async (req, res) => {
+    try {
+      const { label, dailyLimit = 20, expiresAt } = req.body;
+      const { randomBytes, createHash } = await import('node:crypto');
+
+      // Generate a secure API key: sf_live_<32 random hex chars>
+      const rawKey = `sf_live_${randomBytes(16).toString('hex')}`;
+      const keyHash = createHash('sha256').update(rawKey).digest('hex');
+      const keyPrefix = rawKey.slice(0, 12) + '...';
+
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+      const { data, error } = await supabase.from('stockfinder_api_keys').insert({
+        key_hash: keyHash,
+        key_prefix: keyPrefix,
+        label: label || '',
+        daily_limit: dailyLimit,
+        expires_at: expiresAt || null,
+      }).select().single();
+
+      if (error) throw error;
+
+      // Return the full key ONLY this one time
+      res.json({ key: rawKey, keyPrefix, id: data.id });
+    } catch (err: any) {
+      console.error('[StockFinder Admin] create key error:', err.message);
+      res.status(500).json({ error: 'Failed to create key' });
+    }
+  });
+
+  app.delete('/api/stockfinder/admin/keys/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+      const { error } = await supabase
+        .from('stockfinder_api_keys')
+        .update({ is_active: false })
+        .eq('id', id);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('[StockFinder Admin] revoke key error:', err.message);
+      res.status(500).json({ error: 'Failed to revoke key' });
+    }
+  });
+
+  app.patch('/api/stockfinder/admin/keys/:id', express.json(), async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { is_active, daily_limit, label } = req.body;
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || SUPABASE_LOCAL;
+      const supabase = createClient(supabaseUrl, SUPABASE_KEY);
+
+      const updates: any = {};
+      if (typeof is_active === 'boolean') updates.is_active = is_active;
+      if (typeof daily_limit === 'number') updates.daily_limit = daily_limit;
+      if (typeof label === 'string') updates.label = label;
+
+      const { error } = await supabase
+        .from('stockfinder_api_keys')
+        .update(updates)
+        .eq('id', id);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('[StockFinder Admin] update key error:', err.message);
+      res.status(500).json({ error: 'Failed to update key' });
+    }
+  });
+
   // Catch-all: SSR render for every HTML request
   app.use('*', async (req, res) => {
     const url = req.originalUrl;
@@ -518,7 +834,8 @@ async function createServer() {
     const isStatic = staticPages.includes(url.slice(1));
     const isAuth = authPages.includes(url.slice(1));
 
-    const isValidRoute = isRoot || isCategory || isArticle || isAuthor || isStatic || isAuth;
+    const isTools = url.startsWith('/tools/');
+    const isValidRoute = isRoot || isCategory || isArticle || isAuthor || isStatic || isAuth || isTools;
 
     try {
       let template: string;

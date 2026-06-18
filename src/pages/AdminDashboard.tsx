@@ -86,7 +86,7 @@ export default function AdminDashboard() {
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [registerRole, setRegisterRole] = useState<'user' | 'poster'>('user');
-  const [activeTab, setActiveTab] = useState<'articles' | 'users' | 'ads' | 'daily'>('articles');
+  const [activeTab, setActiveTab] = useState<'articles' | 'users' | 'ads' | 'daily' | 'sfkeys'>('articles');
   const [profiles, setProfiles] = useState<any[]>([]);
 
   const fetchProfiles = async () => {
@@ -865,6 +865,14 @@ export default function AdminDashboard() {
               🗞️ Daily Generator
             </button>
           )}
+          {(role === 'admin' || role === 'dev') && (
+            <button 
+              className={`pb-2 px-2 font-bold ${activeTab === 'sfkeys' ? 'border-b-2 border-black text-black' : 'text-gray-400'}`}
+              onClick={() => setActiveTab('sfkeys')}
+            >
+              🔑 SF Keys
+            </button>
+          )}
         </div>
 
         {role === 'poster' && (
@@ -1040,6 +1048,9 @@ export default function AdminDashboard() {
         ) : activeTab === 'daily' ? (
           /* Daily Generator Tab — dev only */
           <DailyGeneratorTab />
+        ) : activeTab === 'sfkeys' ? (
+          /* StockFinder API Keys Management */
+          <StockFinderKeysTab />
         ) : null}
       </div>
       
@@ -1436,6 +1447,222 @@ export default function AdminDashboard() {
         </div>
         );
       })()}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// StockFinder API Keys Management Tab
+// ---------------------------------------------------------------------------
+function StockFinderKeysTab() {
+  const [keys, setKeys] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newLabel, setNewLabel] = useState('');
+  const [newLimit, setNewLimit] = useState(20);
+  const [generatedKey, setGeneratedKey] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const fetchKeys = async () => {
+    try {
+      const res = await fetch('/api/stockfinder/admin/keys');
+      const data = await res.json();
+      setKeys(data.keys || []);
+    } catch (err) {
+      console.error('Failed to fetch keys:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchKeys(); }, []);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const res = await fetch('/api/stockfinder/admin/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: newLabel, dailyLimit: newLimit }),
+      });
+      const data = await res.json();
+      if (data.key) {
+        setGeneratedKey(data.key);
+        setNewLabel('');
+        setNewLimit(20);
+        fetchKeys();
+      }
+    } catch (err) {
+      console.error('Failed to create key:', err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleKey = async (id: string, currentActive: boolean) => {
+    try {
+      await fetch(`/api/stockfinder/admin/keys/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: !currentActive }),
+      });
+      fetchKeys();
+    } catch (err) {
+      console.error('Failed to toggle key:', err);
+    }
+  };
+
+  const revokeKey = async (id: string) => {
+    if (!confirm('Revoke this API key? Users will lose access immediately.')) return;
+    try {
+      await fetch(`/api/stockfinder/admin/keys/${id}`, { method: 'DELETE' });
+      fetchKeys();
+    } catch (err) {
+      console.error('Failed to revoke key:', err);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="animate-fade-in">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-bold">🔑 StockFinder API Keys</h2>
+      </div>
+
+      {/* Generate New Key Form */}
+      <div className="mb-6 p-4 border rounded-lg bg-gray-50">
+        <h3 className="font-bold text-sm mb-3">Generate New API Key</h3>
+        <div className="flex gap-3 items-end flex-wrap">
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-xs text-gray-500 mb-1">Label / Description</label>
+            <input
+              type="text"
+              value={newLabel}
+              onChange={e => setNewLabel(e.target.value)}
+              placeholder="e.g., John Doe - Content Writer"
+              className="w-full border rounded p-2 text-sm"
+            />
+          </div>
+          <div className="w-32">
+            <label className="block text-xs text-gray-500 mb-1">Daily Limit</label>
+            <input
+              type="number"
+              value={newLimit}
+              onChange={e => setNewLimit(parseInt(e.target.value) || 20)}
+              min={1}
+              max={1000}
+              className="w-full border rounded p-2 text-sm"
+            />
+          </div>
+          <button
+            onClick={handleCreate}
+            disabled={creating}
+            className="px-4 py-2 bg-black text-white text-sm rounded font-bold hover:bg-gray-800 disabled:opacity-50"
+          >
+            {creating ? 'Creating...' : '+ Generate Key'}
+          </button>
+        </div>
+      </div>
+
+      {/* Show Generated Key (one-time display) */}
+      {generatedKey && (
+        <div className="mb-6 p-4 border-2 border-green-400 rounded-lg bg-green-50">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-bold text-green-800 text-sm">✅ New API Key Generated</span>
+            <button onClick={() => setGeneratedKey('')} className="text-gray-400 hover:text-gray-600">
+              <X size={16} />
+            </button>
+          </div>
+          <p className="text-xs text-green-700 mb-2">
+            ⚠️ Copy this key now — it will NOT be shown again!
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-white border border-green-300 rounded p-2 text-sm font-mono break-all select-all">
+              {generatedKey}
+            </code>
+            <button
+              onClick={() => copyToClipboard(generatedKey)}
+              className="px-3 py-2 bg-green-600 text-white text-xs rounded font-bold hover:bg-green-700"
+            >
+              {copied ? '✓ Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Keys Table */}
+      {loading ? (
+        <div className="text-center py-8 text-gray-400">Loading keys...</div>
+      ) : keys.length === 0 ? (
+        <div className="text-center py-8 text-gray-400">No API keys yet. Generate one above.</div>
+      ) : (
+        <div className="overflow-x-auto border rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Key Prefix</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Label</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Status</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Daily Limit</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Total Uses</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Last Used</th>
+                <th className="p-3 text-left text-xs font-bold text-gray-500">Created</th>
+                <th className="p-3 text-right text-xs font-bold text-gray-500">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((k: any) => (
+                <tr key={k.id} className={`border-t ${!k.is_active ? 'opacity-50 bg-gray-50' : ''}`}>
+                  <td className="p-3 font-mono text-xs">{k.key_prefix}</td>
+                  <td className="p-3 text-xs">{k.label || '—'}</td>
+                  <td className="p-3">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${k.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {k.is_active ? 'Active' : 'Revoked'}
+                    </span>
+                  </td>
+                  <td className="p-3 text-xs">{k.daily_limit}/day</td>
+                  <td className="p-3 text-xs font-bold">{k.total_uses || 0}</td>
+                  <td className="p-3 text-xs text-gray-500">
+                    {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : 'Never'}
+                  </td>
+                  <td className="p-3 text-xs text-gray-500">
+                    {new Date(k.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="p-3 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => toggleKey(k.id, k.is_active)}
+                        className={`px-2 py-1 text-xs rounded ${k.is_active ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}
+                        title={k.is_active ? 'Disable key' : 'Re-enable key'}
+                      >
+                        {k.is_active ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        onClick={() => revokeKey(k.id)}
+                        className="px-2 py-1 text-xs rounded bg-red-100 text-red-600 hover:bg-red-200"
+                        title="Permanently revoke"
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+        <strong>💡 Tip:</strong> Share the generated API key with users who need access to StockFinder AI at <code>/tools/stockfinder</code>. 
+        Keys are hashed and stored securely — the full key is only shown once during creation.
+      </div>
     </div>
   );
 }
