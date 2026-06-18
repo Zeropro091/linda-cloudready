@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase, handleSupabaseError, OperationType } from '../lib/supabase';
 import { useArticles } from '../App';
-import { LogOut, Plus, Edit2, Trash2, Archive, CheckCircle, Database, X, UploadCloud, Mail, Sparkles, ShieldAlert, ExternalLink, Eye, EyeOff } from 'lucide-react';
+import { LogOut, Plus, Edit2, Trash2, Archive, CheckCircle, Database, X, UploadCloud, Mail, Sparkles, ShieldAlert, ExternalLink, Eye, EyeOff, Inbox, Clock, XCircle, UserCheck, MessageCircle, CreditCard, Search, Phone, MapPin, BarChart3, TrendingUp, DollarSign, ArrowUpRight, ArrowDownRight, Filter } from 'lucide-react';
 import MDEditor from '@uiw/react-md-editor';
 import { useAuth } from '../components/AuthProvider';
 import DailyGeneratorTab from '../components/DailyGeneratorTab';
+import ImageEditorModal from '../components/ImageEditorModal';
 
 // --- Category name → UUID mapping (matches seed.sql fixed UUIDs) ---
 const CATEGORY_UUID_MAP: Record<string, string> = {
@@ -86,8 +87,176 @@ export default function AdminDashboard() {
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [registerRole, setRegisterRole] = useState<'user' | 'poster'>('user');
-  const [activeTab, setActiveTab] = useState<'articles' | 'users' | 'ads' | 'daily' | 'sfkeys'>('articles');
+  const [activeTab, setActiveTab] = useState<'articles' | 'users' | 'ads' | 'daily' | 'sfkeys' | 'inbox' | 'analytics'>('articles');
   const [profiles, setProfiles] = useState<any[]>([]);
+
+  // Inbox state
+  const [pendingWriters, setPendingWriters] = useState<any[]>([]);
+  const [pendingArticles, setPendingArticles] = useState<any[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [rejectModal, setRejectModal] = useState<{type: 'writer' | 'article', id: string} | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [quotaRequests, setQuotaRequests] = useState<any[]>([]);
+  const [showQuotaForm, setShowQuotaForm] = useState(false);
+  const [quotaFormData, setQuotaFormData] = useState({ amount: 5, message: '', proof_url: '' });
+  const [quotaSubmitting, setQuotaSubmitting] = useState(false);
+  const [myQuotaRequests, setMyQuotaRequests] = useState<any[]>([]);
+  const [investigateUser, setInvestigateUser] = useState<any>(null);
+  const [investigateArticles, setInvestigateArticles] = useState<any[]>([]);
+
+  const WHATSAPP_NUMBER = '6281234567890'; // Change to your admin WA number
+  const WHATSAPP_URL = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent('Halo Admin, saya ingin request quota publikasi. Berikut bukti transfer saya:')}`;
+
+  const fetchInbox = async () => {
+    setInboxLoading(true);
+    try {
+      const [writers, articles, quotaReqs] = await Promise.all([
+        supabase.from('profiles').select('*').eq('writer_status', 'pending').order('applied_at', { ascending: false }),
+        supabase.from('articles').select('*').eq('status', 'pending_review').order('createdAt', { ascending: false }),
+        supabase.from('quota_requests').select('*, profiles!quota_requests_profile_fk(email, full_name, pen_name, role, quota, phone_number, city, bio, profile_photo, writer_status)').eq('status', 'pending').order('created_at', { ascending: false }),
+      ]);
+      setPendingWriters(writers.data || []);
+      setPendingArticles(articles.data || []);
+      setQuotaRequests(quotaReqs.data || []);
+    } catch (e) {
+      console.error('Inbox fetch error:', e);
+    } finally {
+      setInboxLoading(false);
+    }
+  };
+
+  const approveWriter = async (profileId: string) => {
+    try {
+      const { error } = await supabase.from('profiles').update({
+        role: 'poster', writer_status: 'approved', reviewed_by: user?.id, reviewed_at: new Date().toISOString(), quota: 5,
+      }).eq('id', profileId);
+      if (error) throw error;
+      fetchInbox();
+      fetchProfiles();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  const rejectWriter = async (profileId: string, reason: string) => {
+    try {
+      const { error } = await supabase.from('profiles').update({
+        writer_status: 'rejected', rejection_reason: reason || 'Application not approved.', reviewed_by: user?.id, reviewed_at: new Date().toISOString(),
+      }).eq('id', profileId);
+      if (error) throw error;
+      setRejectModal(null); setRejectReason('');
+      fetchInbox();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  const approveArticle = async (articleId: string) => {
+    try {
+      const { error } = await supabase.from('articles').update({
+        status: 'published', published_at: new Date().toISOString(),
+      }).eq('id', articleId);
+      if (error) throw error;
+      fetchInbox(); fetchArticles(); refetchGlobalArticles();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  const rejectArticle = async (articleId: string, reason: string) => {
+    try {
+      const { error } = await supabase.from('articles').update({
+        status: 'rejected',
+      }).eq('id', articleId);
+      if (error) throw error;
+      setRejectModal(null); setRejectReason('');
+      fetchInbox(); fetchArticles();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  // Quota request handlers
+  const approveQuotaRequest = async (requestId: string, userId: string, amount: number) => {
+    try {
+      // Update request status
+      const { error: reqErr } = await supabase.from('quota_requests').update({
+        status: 'approved', reviewed_by: user?.id, reviewed_at: new Date().toISOString(),
+      }).eq('id', requestId);
+      if (reqErr) throw reqErr;
+      // Add quota to user profile
+      const targetProfile = profiles.find((p: any) => p.id === userId);
+      const newQuota = (targetProfile?.quota || 0) + amount;
+      const { error: profErr } = await supabase.from('profiles').update({ quota: newQuota }).eq('id', userId);
+      if (profErr) throw profErr;
+      fetchInbox(); fetchProfiles();
+      // Auto-log income for quota purchase
+      try {
+        await supabase.from('financial_transactions').insert({
+          type: 'income', category: 'quota_purchase', amount: amount * 10000,
+          description: `Quota purchase: +${amount} articles`, reference_id: requestId, recorded_by: user?.id,
+          transaction_date: new Date().toISOString().split('T')[0],
+        });
+      } catch (e) { console.error('Auto-log failed:', e); }
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  const rejectQuotaRequest = async (requestId: string, notes: string) => {
+    try {
+      const { error } = await supabase.from('quota_requests').update({
+        status: 'rejected', admin_notes: notes || 'Request not approved.', reviewed_by: user?.id, reviewed_at: new Date().toISOString(),
+      }).eq('id', requestId);
+      if (error) throw error;
+      setRejectModal(null); setRejectReason('');
+      fetchInbox();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+  };
+
+  const submitQuotaRequest = async () => {
+    if (!user) return;
+    setQuotaSubmitting(true);
+    try {
+      const { error } = await supabase.from('quota_requests').insert({
+        user_id: user.id, amount: quotaFormData.amount, message: quotaFormData.message || null, proof_url: quotaFormData.proof_url || null,
+      });
+      if (error) throw error;
+      setShowQuotaForm(false);
+      setQuotaFormData({ amount: 5, message: '', proof_url: '' });
+      // Refetch my requests
+      const { data } = await supabase.from('quota_requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
+      setMyQuotaRequests(data || []);
+      alert('Quota request submitted! Admin will review it shortly.');
+    } catch (e: any) { alert('Failed: ' + e.message); }
+    finally { setQuotaSubmitting(false); }
+  };
+
+  const handleProofUpload = async (file: File) => {
+    if (!file.type.startsWith('image/')) { alert('Please upload an image'); return; }
+    try {
+      const ext = file.name.split('.').pop() ?? 'jpg';
+      const path = `proofs/${user!.id}-${Date.now()}.${ext}`;
+      const { data, error } = await supabase.storage.from('images').upload(path, file, { cacheControl: '3600', upsert: true });
+      if (error) throw error;
+      const { data: urlData } = supabase.storage.from('images').getPublicUrl(data.path);
+      setQuotaFormData(prev => ({ ...prev, proof_url: urlData.publicUrl }));
+    } catch {
+      const reader = new FileReader();
+      reader.onload = () => setQuotaFormData(prev => ({ ...prev, proof_url: reader.result as string }));
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const investigateUserData = async (userId: string) => {
+    try {
+      const [profileRes, articlesRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', userId).single(),
+        supabase.from('articles').select('id, title, status, category, createdAt, author').eq('author_id', userId).order('createdAt', { ascending: false }).limit(20),
+      ]);
+      setInvestigateUser(profileRes.data);
+      setInvestigateArticles(articlesRes.data || []);
+    } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => {
+    if (user && (role === 'admin' || role === 'dev')) fetchInbox();
+    // Fetch my own quota requests for poster
+    if (user && role === 'poster') {
+      supabase.from('quota_requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+        .then(({ data }) => setMyQuotaRequests(data || []));
+    }
+  }, [user, role]);
 
   const fetchProfiles = async () => {
     try {
@@ -123,6 +292,40 @@ export default function AdminDashboard() {
   const [isDraggingGallery, setIsDraggingGallery] = useState(false);
   const [isUploadingGallery, setIsUploadingGallery] = useState(false);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+
+  // Image editor state
+  const [editorImageUrl, setEditorImageUrl] = useState<string>('');
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorTarget, setEditorTarget] = useState<'cover' | 'gallery' | null>(null);
+  const [editorGalleryIndex, setEditorGalleryIndex] = useState(-1);
+
+  const openEditor = (url: string, target: 'cover' | 'gallery', galleryIdx = -1) => {
+    setEditorImageUrl(url);
+    setEditorTarget(target);
+    setEditorGalleryIndex(galleryIdx);
+    setEditorOpen(true);
+  };
+
+  const handleEditorSave = async (blob: Blob, _blobUrl: string) => {
+    try {
+      const file = new File([blob], `edited-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      const url = await uploadFileToStorage(file);
+      if (editorTarget === 'cover') {
+        setEditingArticle((prev: any) => ({ ...prev, imageUrl: url, _imgError: false }));
+      } else if (editorTarget === 'gallery' && editorGalleryIndex >= 0) {
+        setGalleryImages(prev => {
+          const next = [...prev];
+          next[editorGalleryIndex] = { ...next[editorGalleryIndex], url };
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to upload edited image:', err);
+      alert('Failed to upload edited image');
+    } finally {
+      setEditorOpen(false);
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contentImgRef = useRef<HTMLInputElement>(null);
@@ -585,6 +788,7 @@ export default function AdminDashboard() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return; // Prevent double submission
     try {
       setLoading(true);
       const src = { ...editingArticle };
@@ -625,7 +829,11 @@ export default function AdminDashboard() {
       }
 
       // Set published_at when publishing
-      if (articleStatus === 'published') {
+      // Poster articles go to pending_review — admin/dev publish directly
+      if (articleStatus === 'published' && role === 'poster') {
+        basePayload.status = 'pending_review';
+        basePayload.published_at = null;
+      } else if (articleStatus === 'published') {
         basePayload.published_at = src.published_at || new Date().toISOString();
       }
 
@@ -873,18 +1081,97 @@ export default function AdminDashboard() {
               🔑 SF Keys
             </button>
           )}
+          {(role === 'admin' || role === 'dev') && (
+            <button 
+              className={`pb-2 px-2 font-bold relative ${activeTab === 'inbox' ? 'border-b-2 border-black text-black' : 'text-gray-400'}`}
+              onClick={() => { setActiveTab('inbox'); fetchInbox(); }}
+            >
+              📬 Inbox
+              {(pendingWriters.length + pendingArticles.length + quotaRequests.length) > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                  {pendingWriters.length + pendingArticles.length + quotaRequests.length}
+                </span>
+              )}
+            </button>
+          )}
+          {(role === 'admin' || role === 'dev') && (
+            <button 
+              className={`pb-2 px-2 font-bold ${activeTab === 'analytics' ? 'border-b-2 border-black text-black' : 'text-gray-400'}`}
+              onClick={() => setActiveTab('analytics')}
+            >
+              📊 Analytics
+            </button>
+          )}
         </div>
 
         {role === 'poster' && (
-          <div className="mb-6 p-4 bg-purple-550 border border-purple-200 rounded-lg flex items-center justify-between animate-fade-in" style={{ backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }}>
-            <div>
-              <h3 className="font-bold text-purple-900">Journalist Upload Quota</h3>
-              <p className="text-xs text-purple-750">You can upload up to {quota} more articles. Each new upload consumes 1 quota point.</p>
+          <div className="mb-6 space-y-3">
+            <div className="p-4 border rounded-lg flex items-center justify-between" style={{ backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }}>
+              <div>
+                <h3 className="font-bold text-purple-900">Journalist Upload Quota</h3>
+                <p className="text-xs text-purple-750">You can upload up to {quota} more articles. Each new upload consumes 1 quota point.</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <span className="text-2xl font-black text-purple-900">{quota}</span>
+                  <span className="block text-[10px] text-purple-500 font-bold uppercase tracking-wider">Remaining</span>
+                </div>
+                <button onClick={() => setShowQuotaForm(!showQuotaForm)} className="flex items-center gap-1.5 px-3 py-2 bg-purple-700 text-white text-xs font-bold rounded-lg hover:bg-purple-800 transition-colors cursor-pointer border-0">
+                  <CreditCard size={14} /> Request Quota
+                </button>
+                <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 transition-colors no-underline">
+                  <MessageCircle size={14} /> Chat WA
+                </a>
+              </div>
             </div>
-            <div className="text-right">
-              <span className="text-2xl font-black text-purple-900">{quota}</span>
-              <span className="block text-[10px] text-purple-500 font-bold uppercase tracking-wider">Remaining</span>
-            </div>
+
+            {/* Quota Request Form */}
+            {showQuotaForm && (
+              <div className="p-4 bg-white border border-purple-200 rounded-lg space-y-3">
+                <h4 className="font-bold text-sm">Request Additional Quota</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Amount</label>
+                    <select value={quotaFormData.amount} onChange={e => setQuotaFormData(prev => ({ ...prev, amount: parseInt(e.target.value) }))} className="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                      {[5, 10, 20, 50].map(n => <option key={n} value={n}>{n} articles</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Transfer Proof</label>
+                    <input type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) handleProofUpload(f); }} className="w-full text-sm" />
+                  </div>
+                </div>
+                {quotaFormData.proof_url && (
+                  <div className="flex items-center gap-2">
+                    <img src={quotaFormData.proof_url} alt="Proof" className="w-20 h-20 rounded object-cover border" />
+                    <button type="button" onClick={() => setQuotaFormData(prev => ({ ...prev, proof_url: '' }))} className="text-xs text-red-600 hover:underline bg-transparent border-0 cursor-pointer">Remove</button>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Message (optional)</label>
+                  <textarea rows={2} value={quotaFormData.message} onChange={e => setQuotaFormData(prev => ({ ...prev, message: e.target.value }))} placeholder="Additional info or payment details..." className="w-full border border-gray-300 rounded px-3 py-2 text-sm resize-none" />
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={submitQuotaRequest} disabled={quotaSubmitting} className="px-4 py-2 bg-purple-700 text-white text-xs font-bold rounded hover:bg-purple-800 cursor-pointer border-0 disabled:opacity-50">
+                    {quotaSubmitting ? 'Submitting...' : 'Submit Request'}
+                  </button>
+                  <button onClick={() => setShowQuotaForm(false)} className="px-4 py-2 text-xs font-bold text-gray-500 bg-transparent border-0 cursor-pointer">Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* My Request History */}
+            {myQuotaRequests.length > 0 && (
+              <div className="text-xs space-y-1">
+                <div className="font-bold text-gray-500 uppercase tracking-wider">Your Requests</div>
+                {myQuotaRequests.slice(0, 5).map((req: any) => (
+                  <div key={req.id} className="flex items-center justify-between p-2 bg-white border border-gray-200 rounded">
+                    <span>{req.amount} articles — <span className={req.status === 'approved' ? 'text-green-600 font-bold' : req.status === 'rejected' ? 'text-red-600 font-bold' : 'text-amber-600 font-bold'}>{req.status.toUpperCase()}</span></span>
+                    <span className="text-gray-400">{new Date(req.created_at).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -953,10 +1240,12 @@ export default function AdminDashboard() {
                               draft: 'bg-gray-100 text-gray-600',
                               scheduled: 'bg-indigo-100 text-indigo-700',
                               archived: 'bg-yellow-100 text-yellow-800',
+                              pending_review: 'bg-amber-100 text-amber-800',
+                              rejected: 'bg-red-100 text-red-700',
                             };
                             return (
                               <span className={`px-2 py-1 rounded text-xs font-bold ${badge[s] || badge.draft}`}>
-                                {s === 'scheduled' ? `⏰ ${article.scheduled_at ? new Date(article.scheduled_at).toLocaleDateString() : 'SCHEDULED'}` : s.toUpperCase()}
+                                {s === 'scheduled' ? `⏰ ${article.scheduled_at ? new Date(article.scheduled_at).toLocaleDateString() : 'SCHEDULED'}` : s === 'pending_review' ? '🔍 PENDING REVIEW' : s === 'rejected' ? '❌ REJECTED' : s.toUpperCase()}
                               </span>
                             );
                           })()}
@@ -1051,6 +1340,247 @@ export default function AdminDashboard() {
         ) : activeTab === 'sfkeys' ? (
           /* StockFinder API Keys Management */
           <StockFinderKeysTab />
+        ) : activeTab === 'inbox' ? (
+          /* ══════ INBOX TAB ══════ */
+          <div className="space-y-8">
+            {/* Stats Bar */}
+            <div className="grid grid-cols-4 gap-4">
+              {[
+                { label: 'Pending Writers', value: pendingWriters.length, icon: <Clock size={18} />, color: 'amber' },
+                { label: 'Pending Articles', value: pendingArticles.length, icon: <Inbox size={18} />, color: 'blue' },
+                { label: 'Active Writers', value: profiles.filter((p: any) => p.role === 'poster').length, icon: <UserCheck size={18} />, color: 'green' },
+                { label: 'Total Published', value: articles.filter((a: any) => a.status === 'published').length, icon: <CheckCircle size={18} />, color: 'emerald' },
+              ].map((stat, i) => (
+                <div key={i} className="bg-white border border-gray-200 rounded-xl p-4">
+                  <div className="flex items-center gap-2 text-gray-400 mb-1">{stat.icon}<span className="text-xs font-bold uppercase tracking-wider">{stat.label}</span></div>
+                  <div className="text-2xl font-black text-gray-900">{stat.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {inboxLoading ? (
+              <div className="text-center py-12 text-gray-400"><div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-gray-400 mx-auto mb-2" />Loading...</div>
+            ) : (
+              <>
+                {/* ── Writer Applications ── */}
+                <div>
+                  <h3 className="text-lg font-black mb-3 flex items-center gap-2">
+                    <UserCheck size={20} /> Writer Applications
+                    {pendingWriters.length > 0 && <span className="bg-amber-100 text-amber-800 text-xs font-bold px-2 py-0.5 rounded-full">{pendingWriters.length}</span>}
+                  </h3>
+                  {pendingWriters.length === 0 ? (
+                    <div className="bg-gray-50 rounded-xl p-8 text-center text-gray-400 text-sm">No pending writer applications</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {pendingWriters.map((w: any) => (
+                        <div key={w.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-start gap-4">
+                          <img src={w.profile_photo || `https://api.dicebear.com/7.x/notionists/svg?seed=${w.email}`} alt="" className="w-12 h-12 rounded-full object-cover border border-gray-200 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-gray-900">{w.full_name || w.email?.split('@')[0]}</div>
+                            {w.pen_name && <div className="text-xs text-gray-500">Pen name: {w.pen_name}</div>}
+                            <div className="text-xs text-gray-400 mt-1">{w.email} · {w.phone_number} · {w.city}</div>
+                            {w.bio && <div className="text-sm text-gray-600 mt-2 line-clamp-2">{w.bio}</div>}
+                            <div className="text-[10px] text-gray-400 mt-1">Applied {w.applied_at ? new Date(w.applied_at).toLocaleDateString() : '—'}</div>
+                          </div>
+                          <div className="flex gap-2 flex-shrink-0">
+                            <button onClick={() => approveWriter(w.id)} className="flex items-center gap-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg text-xs font-bold hover:bg-green-200 transition-colors cursor-pointer border-0">
+                              <CheckCircle size={14} /> Approve
+                            </button>
+                            <button onClick={() => { setRejectModal({ type: 'writer', id: w.id }); setRejectReason(''); }} className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors cursor-pointer border-0">
+                              <XCircle size={14} /> Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Pending Articles ── */}
+                <div>
+                  <h3 className="text-lg font-black mb-3 flex items-center gap-2">
+                    <Inbox size={20} /> Articles Pending Review
+                    {pendingArticles.length > 0 && <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-0.5 rounded-full">{pendingArticles.length}</span>}
+                  </h3>
+                  {pendingArticles.length === 0 ? (
+                    <div className="bg-gray-50 rounded-xl p-8 text-center text-gray-400 text-sm">No articles pending review</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {pendingArticles.map((a: any) => (
+                        <div key={a.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-start gap-4">
+                          {a.imageUrl && <img src={a.imageUrl} alt="" className="w-16 h-12 rounded object-cover flex-shrink-0 border border-gray-200" />}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-gray-900">{a.title}</div>
+                            <div className="text-xs text-gray-500">by {a.author} · {a.category}</div>
+                            {a.excerpt && <div className="text-sm text-gray-600 mt-1 line-clamp-2">{a.excerpt}</div>}
+                            <div className="text-[10px] text-gray-400 mt-1">Submitted {a.createdAt ? new Date(a.createdAt).toLocaleDateString() : '—'}</div>
+                          </div>
+                          <div className="flex gap-2 flex-shrink-0">
+                            <button onClick={() => openModal(a)} className="flex items-center gap-1 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-200 transition-colors cursor-pointer border-0">
+                              <Eye size={14} /> Preview
+                            </button>
+                            <button onClick={() => approveArticle(a.id)} className="flex items-center gap-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg text-xs font-bold hover:bg-green-200 transition-colors cursor-pointer border-0">
+                              <CheckCircle size={14} /> Publish
+                            </button>
+                            <button onClick={() => { setRejectModal({ type: 'article', id: a.id }); setRejectReason(''); }} className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors cursor-pointer border-0">
+                              <XCircle size={14} /> Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* Reject Reason Modal */}
+            {rejectModal && (
+              <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center" onClick={() => setRejectModal(null)}>
+                <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
+                  <h3 className="font-black text-lg mb-4">Rejection Reason</h3>
+                  <textarea
+                    rows={3}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none mb-4"
+                    placeholder="Explain why this is being rejected (optional)..."
+                    value={rejectReason}
+                    onChange={e => setRejectReason(e.target.value)}
+                  />
+                  <div className="flex gap-3 justify-end">
+                    <button onClick={() => setRejectModal(null)} className="px-4 py-2 text-sm font-bold text-gray-500 hover:text-gray-700 cursor-pointer bg-transparent border-0">Cancel</button>
+                    <button
+                      onClick={() => {
+                        if (rejectModal.type === 'writer') rejectWriter(rejectModal.id, rejectReason);
+                        else if ((rejectModal.type as any) === 'quota') rejectQuotaRequest(rejectModal.id, rejectReason);
+                        else rejectArticle(rejectModal.id, rejectReason);
+                      }}
+                      className="px-4 py-2 bg-red-600 text-white text-sm font-bold rounded-lg hover:bg-red-700 cursor-pointer border-0"
+                    >
+                      Confirm Reject
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+                {/* ── Quota Requests ── */}
+                <div>
+                  <h3 className="text-lg font-black mb-3 flex items-center gap-2">
+                    <CreditCard size={20} /> Quota Requests
+                    {quotaRequests.length > 0 && <span className="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-0.5 rounded-full">{quotaRequests.length}</span>}
+                  </h3>
+                  {quotaRequests.length === 0 ? (
+                    <div className="bg-gray-50 rounded-xl p-8 text-center text-gray-400 text-sm">No pending quota requests</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {quotaRequests.map((req: any) => {
+                        const p = req.profiles;
+                        return (
+                          <div key={req.id} className="bg-white border border-gray-200 rounded-xl p-4">
+                            <div className="flex items-start gap-4">
+                              <img src={p?.profile_photo || `https://api.dicebear.com/7.x/notionists/svg?seed=${p?.email}`} alt="" className="w-10 h-10 rounded-full object-cover border border-gray-200 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-gray-900">{p?.full_name || p?.email?.split('@')[0]}</span>
+                                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded font-bold text-gray-500">{p?.role}</span>
+                                  <span className="text-[10px] text-gray-400">Quota: {p?.quota ?? 0}</span>
+                                </div>
+                                <div className="text-xs text-gray-400">{p?.email} · {p?.phone_number || '—'} · {p?.city || '—'}</div>
+                                <div className="flex items-center gap-4 mt-2">
+                                  <span className="text-sm font-bold text-purple-700">+{req.amount} articles requested</span>
+                                  {req.message && <span className="text-xs text-gray-500 italic">"{req.message}"</span>}
+                                </div>
+                                {req.proof_url && (
+                                  <a href={req.proof_url} target="_blank" rel="noopener noreferrer" className="inline-block mt-2">
+                                    <img src={req.proof_url} alt="Transfer proof" className="w-32 h-24 rounded object-cover border border-gray-200 hover:opacity-80 transition-opacity" />
+                                  </a>
+                                )}
+                                <div className="text-[10px] text-gray-400 mt-1">Requested {new Date(req.created_at).toLocaleDateString()}</div>
+                              </div>
+                              <div className="flex flex-col gap-2 flex-shrink-0">
+                                <button onClick={() => investigateUserData(req.user_id)} className="flex items-center gap-1 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-200 transition-colors cursor-pointer border-0">
+                                  <Search size={14} /> Investigate
+                                </button>
+                                <button onClick={() => approveQuotaRequest(req.id, req.user_id, req.amount)} className="flex items-center gap-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg text-xs font-bold hover:bg-green-200 transition-colors cursor-pointer border-0">
+                                  <CheckCircle size={14} /> Approve
+                                </button>
+                                <button onClick={() => { setRejectModal({ type: 'quota' as any, id: req.id }); setRejectReason(''); }} className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors cursor-pointer border-0">
+                                  <XCircle size={14} /> Reject
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+            {/* User Investigation Modal */}
+            {investigateUser && (
+              <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center" onClick={() => setInvestigateUser(null)}>
+                <div className="bg-white rounded-xl p-6 w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-black text-lg flex items-center gap-2"><Search size={20} /> User Investigation</h3>
+                    <button onClick={() => setInvestigateUser(null)} className="p-1 rounded hover:bg-gray-100 cursor-pointer bg-transparent border-0"><X size={18} /></button>
+                  </div>
+
+                  {/* User Profile Card */}
+                  <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                    <div className="flex items-start gap-4">
+                      <img src={investigateUser.profile_photo || `https://api.dicebear.com/7.x/notionists/svg?seed=${investigateUser.email}`} alt="" className="w-16 h-16 rounded-full object-cover border-2 border-gray-200" />
+                      <div className="flex-1">
+                        <div className="text-lg font-black">{investigateUser.full_name || investigateUser.email?.split('@')[0]}</div>
+                        {investigateUser.pen_name && <div className="text-sm text-gray-500">Pen: {investigateUser.pen_name}</div>}
+                        <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-500">
+                          <span className="flex items-center gap-1"><Mail size={12} /> {investigateUser.email}</span>
+                          {investigateUser.phone_number && <span className="flex items-center gap-1"><Phone size={12} /> {investigateUser.phone_number}</span>}
+                          {investigateUser.city && <span className="flex items-center gap-1"><MapPin size={12} /> {investigateUser.city}</span>}
+                        </div>
+                        {investigateUser.bio && <div className="text-sm text-gray-600 mt-2">{investigateUser.bio}</div>}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-3 mt-4">
+                      {[
+                        { label: 'Role', value: investigateUser.role?.toUpperCase() },
+                        { label: 'Quota', value: investigateUser.quota ?? 0 },
+                        { label: 'Writer Status', value: investigateUser.writer_status || 'none' },
+                        { label: 'Joined', value: investigateUser.createdAt ? new Date(investigateUser.createdAt).toLocaleDateString() : '—' },
+                      ].map((s, i) => (
+                        <div key={i} className="bg-white rounded-lg p-2 text-center border border-gray-200">
+                          <div className="text-[10px] font-bold text-gray-400 uppercase">{s.label}</div>
+                          <div className="text-sm font-black">{s.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* User's Articles */}
+                  <div>
+                    <h4 className="font-bold text-sm mb-2">Articles ({investigateArticles.length})</h4>
+                    {investigateArticles.length === 0 ? (
+                      <div className="text-sm text-gray-400 text-center py-4">No articles found</div>
+                    ) : (
+                      <div className="space-y-1 max-h-60 overflow-y-auto">
+                        {investigateArticles.map((a: any) => (
+                          <div key={a.id} className="flex items-center justify-between p-2 bg-white border border-gray-200 rounded text-sm">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-bold truncate">{a.title}</div>
+                              <div className="text-[10px] text-gray-400">{a.category} · {a.createdAt ? new Date(a.createdAt).toLocaleDateString() : ''}</div>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${a.status === 'published' ? 'bg-green-100 text-green-700' : a.status === 'pending_review' ? 'bg-amber-100 text-amber-700' : a.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>{a.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'analytics' ? (
+          /* ══════ ANALYTICS TAB ══════ */
+          <AnalyticsTab />
         ) : null}
       </div>
       
@@ -1258,6 +1788,7 @@ export default function AdminDashboard() {
                       <img src={editingArticle.imageUrl} alt="Cover" style={{ width: '100%', height: 120, objectFit: 'cover' }} onError={() => setEditingArticle((prev: any) => ({ ...prev, _imgError: true }))} />
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                         <button type="button" onClick={() => fileInputRef.current?.click()} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, border: 'none', background: '#fff', color: '#374151', cursor: 'pointer', fontWeight: 600 }}>Change</button>
+                        <button type="button" onClick={() => openEditor(editingArticle.imageUrl, 'cover')} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, border: 'none', background: '#3b82f6', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>Edit</button>
                         <button type="button" onClick={() => setEditingArticle((prev: any) => ({ ...prev, imageUrl: '', _imgError: false }))} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>Remove</button>
                       </div>
                     </div>
@@ -1330,6 +1861,15 @@ export default function AdminDashboard() {
                             </button>
                             <button
                               type="button"
+                              onClick={(e) => { e.stopPropagation(); openEditor(img.url, 'gallery', i); }}
+                              className="rounded-full p-1 shadow-md transition-colors"
+                              style={{ background: '#fff', border: 'none', cursor: 'pointer', color: '#3b82f6' }}
+                              title="Edit image"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              type="button"
                               onClick={(e) => { e.stopPropagation(); setEditingArticle({ ...editingArticle, imageUrl: img.url }); }}
                               className="rounded-full p-1 shadow-md transition-colors"
                               style={{ background: '#fff', border: 'none', cursor: 'pointer', color: '#374151' }}
@@ -1357,7 +1897,16 @@ export default function AdminDashboard() {
                 {/* Author */}
                 <div style={{ padding: 16, borderBottom: '1px solid #e5e7eb' }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Author</div>
-                  <input required type="text" value={editingArticle.author} onChange={e => setEditingArticle({ ...editingArticle, author: e.target.value })} style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 13, outline: 'none', background: '#fff', color: '#374151' }} />
+                  {role === 'poster' ? (
+                    <div>
+                      <div style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 13, background: '#f3f4f6', color: '#6b7280' }}>
+                        {editingArticle.author}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4 }}>Author name is set from your profile. Update it in your <a href="/profile" style={{ color: '#1D9E75', textDecoration: 'underline' }}>Profile</a>.</div>
+                    </div>
+                  ) : (
+                    <input required type="text" value={editingArticle.author} onChange={e => setEditingArticle({ ...editingArticle, author: e.target.value })} style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 13, outline: 'none', background: '#fff', color: '#374151' }} />
+                  )}
                 </div>
 
                 {/* Category */}
@@ -1447,6 +1996,15 @@ export default function AdminDashboard() {
         </div>
         );
       })()}
+
+      {/* Image Editor Modal */}
+      {editorOpen && editorImageUrl && (
+        <ImageEditorModal
+          imageUrl={editorImageUrl}
+          onSave={handleEditorSave}
+          onClose={() => setEditorOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2214,6 +2772,331 @@ function AdManagementTab() {
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ANALYTICS TAB COMPONENT
+// ═══════════════════════════════════════════════════════════════
+function AnalyticsTab() {
+  const { user } = useAuth();
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [allArticles, setAllArticles] = useState<any[]>([]);
+  const [allProfiles, setAllProfiles] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filterMonth, setFilterMonth] = useState(() => {
+    const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [txForm, setTxForm] = useState({
+    type: 'income' as 'income' | 'expense',
+    category: 'misc_income',
+    amount: '',
+    description: '',
+    transaction_date: new Date().toISOString().split('T')[0],
+  });
+  const [saving, setSaving] = useState(false);
+
+  const CATEGORIES = {
+    income: [
+      { value: 'quota_purchase', label: 'Quota Purchase' },
+      { value: 'ad_revenue', label: 'Ad Revenue' },
+      { value: 'sponsorship', label: 'Sponsorship' },
+      { value: 'misc_income', label: 'Other Income' },
+    ],
+    expense: [
+      { value: 'salary', label: 'Salary' },
+      { value: 'hosting', label: 'Hosting' },
+      { value: 'operational', label: 'Operational' },
+      { value: 'misc_expense', label: 'Other Expense' },
+    ],
+  };
+
+  const fetchAll = async () => {
+    setLoading(true);
+    try {
+      const [txRes, artRes, profRes] = await Promise.all([
+        supabase.from('financial_transactions').select('*').order('transaction_date', { ascending: false }).limit(500),
+        supabase.from('articles').select('id, status, author, author_id, createdAt, category'),
+        supabase.from('profiles').select('id, email, full_name, role, quota, createdAt'),
+      ]);
+      setTransactions(txRes.data || []);
+      setAllArticles(artRes.data || []);
+      setAllProfiles(profRes.data || []);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { fetchAll(); }, []);
+
+  const addTransaction = async () => {
+    if (!txForm.amount || parseFloat(txForm.amount) <= 0) { alert('Enter a valid amount'); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('financial_transactions').insert({
+        type: txForm.type, category: txForm.category, amount: parseFloat(txForm.amount),
+        description: txForm.description || null, recorded_by: user?.id,
+        transaction_date: txForm.transaction_date,
+      });
+      if (error) throw error;
+      setShowAddForm(false);
+      setTxForm({ type: 'income', category: 'misc_income', amount: '', description: '', transaction_date: new Date().toISOString().split('T')[0] });
+      fetchAll();
+    } catch (e: any) { alert('Failed: ' + e.message); }
+    finally { setSaving(false); }
+  };
+
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const lastMonth = (() => { const d = new Date(now); d.setMonth(d.getMonth() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })();
+
+  const txThisMonth = transactions.filter(t => t.transaction_date?.startsWith(thisMonth));
+  const revenueThisMonth = txThisMonth.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
+  const expenseThisMonth = txThisMonth.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+  const totalRevenue = transactions.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
+  const totalExpense = transactions.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+
+  const monthlyData = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now); d.setMonth(d.getMonth() - (5 - i));
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const monthTx = transactions.filter(t => t.transaction_date?.startsWith(key));
+    const income = monthTx.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
+    const expense = monthTx.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+    return { key, label: d.toLocaleDateString('id-ID', { month: 'short' }), income, expense };
+  });
+  const chartMax = Math.max(...monthlyData.map(m => Math.max(m.income, m.expense)), 1);
+
+  const publishedCount = allArticles.filter(a => a.status === 'published').length;
+  const pendingCount = allArticles.filter(a => a.status === 'pending_review').length;
+  const draftCount = allArticles.filter(a => a.status === 'draft').length;
+  const rejectedCount = allArticles.filter(a => a.status === 'rejected').length;
+  const articlesThisMonth = allArticles.filter(a => a.createdAt?.startsWith(thisMonth)).length;
+  const articlesLastMonth = allArticles.filter(a => a.createdAt?.startsWith(lastMonth)).length;
+  const articleGrowth = articlesLastMonth > 0 ? Math.round(((articlesThisMonth - articlesLastMonth) / articlesLastMonth) * 100) : 0;
+
+  const writerStats = allProfiles.filter(p => p.role === 'poster').map(p => ({
+    ...p,
+    articleCount: allArticles.filter(a => a.author_id === p.id).length,
+    publishedCount: allArticles.filter(a => a.author_id === p.id && a.status === 'published').length,
+  })).sort((a, b) => b.articleCount - a.articleCount).slice(0, 5);
+
+  const filteredTx = transactions.filter(t => {
+    if (filterMonth && !t.transaction_date?.startsWith(filterMonth)) return false;
+    if (filterType !== 'all' && t.type !== filterType) return false;
+    return true;
+  });
+
+  const fmt = (n: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
+
+  if (loading) return <div className="text-center py-12 text-gray-400"><div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-gray-400 mx-auto mb-2" />Loading analytics...</div>;
+
+  return (
+    <div className="space-y-6">
+      {/* Financial Summary Cards */}
+      <div className="grid grid-cols-4 gap-4">
+        {[
+          { label: 'Revenue (This Month)', value: fmt(revenueThisMonth), icon: <ArrowUpRight size={18} />, bg: 'from-green-500 to-emerald-600' },
+          { label: 'Expenses (This Month)', value: fmt(expenseThisMonth), icon: <ArrowDownRight size={18} />, bg: 'from-red-500 to-rose-600' },
+          { label: 'Net Profit (This Month)', value: fmt(revenueThisMonth - expenseThisMonth), icon: <TrendingUp size={18} />, bg: revenueThisMonth - expenseThisMonth >= 0 ? 'from-blue-500 to-indigo-600' : 'from-orange-500 to-red-600' },
+          { label: 'All-Time Revenue', value: fmt(totalRevenue), icon: <DollarSign size={18} />, bg: 'from-purple-500 to-violet-600' },
+        ].map((card, i) => (
+          <div key={i} className={`bg-gradient-to-br ${card.bg} rounded-xl p-4 text-white shadow-lg`}>
+            <div className="flex items-center gap-2 opacity-80 mb-1">{card.icon}<span className="text-xs font-bold uppercase tracking-wider">{card.label}</span></div>
+            <div className="text-xl font-black">{card.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Monthly Revenue Chart */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5">
+        <h3 className="font-black text-sm mb-4 flex items-center gap-2"><BarChart3 size={18} /> Monthly Revenue vs Expenses (6 Months)</h3>
+        <div className="flex items-end gap-3" style={{ height: 180 }}>
+          {monthlyData.map((m, i) => (
+            <div key={i} className="flex-1 flex flex-col items-center gap-1">
+              <div className="w-full flex gap-1 items-end" style={{ height: 140 }}>
+                <div className="flex-1 bg-green-400 rounded-t transition-all" style={{ height: `${(m.income / chartMax) * 100}%`, minHeight: m.income > 0 ? 4 : 0 }} title={`Income: ${fmt(m.income)}`} />
+                <div className="flex-1 bg-red-400 rounded-t transition-all" style={{ height: `${(m.expense / chartMax) * 100}%`, minHeight: m.expense > 0 ? 4 : 0 }} title={`Expense: ${fmt(m.expense)}`} />
+              </div>
+              <div className="text-[10px] font-bold text-gray-500 uppercase">{m.label}</div>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-4 mt-3 text-[10px] text-gray-400">
+          <span className="flex items-center gap-1"><span className="w-3 h-2 bg-green-400 rounded inline-block" /> Income</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-2 bg-red-400 rounded inline-block" /> Expense</span>
+        </div>
+      </div>
+
+      {/* Content & Writer Metrics */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white border border-gray-200 rounded-xl p-5">
+          <h3 className="font-black text-sm mb-3">📰 Content Metrics</h3>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: 'Published', value: publishedCount, color: 'text-green-600' },
+              { label: 'Pending Review', value: pendingCount, color: 'text-amber-600' },
+              { label: 'Draft', value: draftCount, color: 'text-gray-500' },
+              { label: 'Rejected', value: rejectedCount, color: 'text-red-600' },
+            ].map((s, i) => (
+              <div key={i} className="bg-gray-50 rounded-lg p-3">
+                <div className="text-[10px] font-bold text-gray-400 uppercase">{s.label}</div>
+                <div className={`text-xl font-black ${s.color}`}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 p-3 bg-gray-50 rounded-lg flex items-center justify-between">
+            <div>
+              <div className="text-[10px] font-bold text-gray-400 uppercase">Articles This Month</div>
+              <div className="text-lg font-black">{articlesThisMonth}</div>
+            </div>
+            <div className={`text-sm font-bold ${articleGrowth >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {articleGrowth >= 0 ? '↑' : '↓'} {Math.abs(articleGrowth)}% vs last month
+            </div>
+          </div>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-xl p-5">
+          <h3 className="font-black text-sm mb-3">✍️ Top Writers</h3>
+          {writerStats.length === 0 ? (
+            <div className="text-sm text-gray-400 text-center py-8">No active writers</div>
+          ) : (
+            <div className="space-y-2">
+              {writerStats.map((w, i) => (
+                <div key={w.id} className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-purple-500 to-indigo-600 text-white flex items-center justify-center text-xs font-black flex-shrink-0">{i + 1}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold truncate">{w.full_name || w.email?.split('@')[0]}</div>
+                    <div className="text-[10px] text-gray-400">{w.email}</div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-sm font-black">{w.articleCount}</div>
+                    <div className="text-[10px] text-gray-400">{w.publishedCount} published</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+            <div className="text-[10px] font-bold text-gray-400 uppercase">Active Writers</div>
+            <div className="text-lg font-black">{allProfiles.filter(p => p.role === 'poster').length}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Transaction Log */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-black text-sm flex items-center gap-2"><CreditCard size={18} /> Transaction Log</h3>
+          <div className="flex items-center gap-2">
+            <input type="month" value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="border border-gray-300 rounded px-2 py-1 text-xs" />
+            <select value={filterType} onChange={e => setFilterType(e.target.value as any)} className="border border-gray-300 rounded px-2 py-1 text-xs">
+              <option value="all">All</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+            </select>
+            <button onClick={() => setShowAddForm(!showAddForm)} className="flex items-center gap-1 px-3 py-1.5 bg-black text-white text-xs font-bold rounded-lg hover:bg-gray-800 cursor-pointer border-0">
+              <Plus size={14} /> Add
+            </button>
+          </div>
+        </div>
+
+        {showAddForm && (
+          <div className="mb-4 p-4 bg-gray-50 rounded-xl space-y-3 border border-gray-200">
+            <div className="grid grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Type</label>
+                <select value={txForm.type} onChange={e => { const t = e.target.value as 'income' | 'expense'; setTxForm(prev => ({ ...prev, type: t, category: t === 'income' ? 'misc_income' : 'misc_expense' })); }} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm">
+                  <option value="income">Income</option>
+                  <option value="expense">Expense</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Category</label>
+                <select value={txForm.category} onChange={e => setTxForm(prev => ({ ...prev, category: e.target.value }))} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm">
+                  {CATEGORIES[txForm.type].map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Amount (IDR)</label>
+                <input type="number" value={txForm.amount} onChange={e => setTxForm(prev => ({ ...prev, amount: e.target.value }))} placeholder="50000" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Date</label>
+                <input type="date" value={txForm.transaction_date} onChange={e => setTxForm(prev => ({ ...prev, transaction_date: e.target.value }))} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Description</label>
+              <input type="text" value={txForm.description} onChange={e => setTxForm(prev => ({ ...prev, description: e.target.value }))} placeholder="e.g., Ad placement from Company X" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={addTransaction} disabled={saving} className="px-4 py-1.5 bg-black text-white text-xs font-bold rounded hover:bg-gray-800 cursor-pointer border-0 disabled:opacity-50">{saving ? 'Saving...' : 'Save Transaction'}</button>
+              <button onClick={() => setShowAddForm(false)} className="px-4 py-1.5 text-xs font-bold text-gray-500 bg-transparent border-0 cursor-pointer">Cancel</button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-4 mb-3 text-xs">
+          <span className="font-bold text-green-600">Income: {fmt(filteredTx.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0))}</span>
+          <span className="font-bold text-red-600">Expense: {fmt(filteredTx.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0))}</span>
+          <span className="font-bold text-gray-600">{filteredTx.length} transactions</span>
+        </div>
+
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-left border-collapse text-sm">
+            <thead className="sticky top-0 bg-gray-50">
+              <tr className="border-b">
+                <th className="p-2 text-[10px] font-bold text-gray-500 uppercase">Date</th>
+                <th className="p-2 text-[10px] font-bold text-gray-500 uppercase">Type</th>
+                <th className="p-2 text-[10px] font-bold text-gray-500 uppercase">Category</th>
+                <th className="p-2 text-[10px] font-bold text-gray-500 uppercase">Amount</th>
+                <th className="p-2 text-[10px] font-bold text-gray-500 uppercase">Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredTx.length === 0 ? (
+                <tr><td colSpan={5} className="p-8 text-center text-gray-400 text-sm">No transactions found</td></tr>
+              ) : (
+                filteredTx.map(tx => (
+                  <tr key={tx.id} className="border-b hover:bg-gray-50">
+                    <td className="p-2 text-gray-600">{tx.transaction_date}</td>
+                    <td className="p-2">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tx.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {tx.type === 'income' ? '↑' : '↓'} {tx.type.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="p-2 text-gray-600">{tx.category?.replace(/_/g, ' ')}</td>
+                    <td className={`p-2 font-bold ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}`}>
+                      {tx.type === 'income' ? '+' : '-'}{fmt(Number(tx.amount))}
+                    </td>
+                    <td className="p-2 text-gray-500 text-xs">{tx.description || '—'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* All-Time Overview */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5">
+        <h3 className="font-black text-sm mb-3">💰 All-Time Financial Overview</h3>
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-green-50 rounded-lg p-4 text-center">
+            <div className="text-[10px] font-bold text-green-600 uppercase">Total Income</div>
+            <div className="text-xl font-black text-green-700">{fmt(totalRevenue)}</div>
+          </div>
+          <div className="bg-red-50 rounded-lg p-4 text-center">
+            <div className="text-[10px] font-bold text-red-600 uppercase">Total Expenses</div>
+            <div className="text-xl font-black text-red-700">{fmt(totalExpense)}</div>
+          </div>
+          <div className={`${totalRevenue - totalExpense >= 0 ? 'bg-blue-50' : 'bg-orange-50'} rounded-lg p-4 text-center`}>
+            <div className={`text-[10px] font-bold ${totalRevenue - totalExpense >= 0 ? 'text-blue-600' : 'text-orange-600'} uppercase`}>Net Profit/Loss</div>
+            <div className={`text-xl font-black ${totalRevenue - totalExpense >= 0 ? 'text-blue-700' : 'text-orange-700'}`}>{fmt(totalRevenue - totalExpense)}</div>
+          </div>
+        </div>
       </div>
     </div>
   );

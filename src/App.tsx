@@ -444,11 +444,9 @@ const Header = () => {
                     Dashboard
                   </Link>
                 )}
-                {role === 'user' && (
-                  <Link to="/profile" className="text-accent font-bold hover:underline">
+                <Link to="/profile" className="text-accent font-bold hover:underline">
                     My Profile
                   </Link>
-                )}
                 <button 
                   onClick={logout} 
                   className="hover:text-ink transition-colors font-bold lowercase flex items-center gap-1"

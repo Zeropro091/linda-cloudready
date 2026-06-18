@@ -1,15 +1,14 @@
 // src/pages/BecomeWriterPage.tsx
-import React, { useState, useRef } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import React, { useState, useRef, useEffect } from 'react';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
 import { supabase } from '../lib/supabase';
-import { UploadCloud, CheckCircle } from 'lucide-react';
+import { UploadCloud, CheckCircle, Clock, XCircle } from 'lucide-react';
 
 const PHONE_REGEX = /^(\+62|08)[0-9]{8,11}$/;
 
 export default function BecomeWriterPage() {
-  const { user, role, loading, refetchProfile } = useAuth();
-  const navigate = useNavigate();
+  const { user, role, loading } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [fullName, setFullName] = useState(user?.user_metadata?.full_name || '');
@@ -24,7 +23,40 @@ export default function BecomeWriterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
-  if (loading) {
+  // Writer application status
+  const [writerStatus, setWriterStatus] = useState<'none' | 'pending' | 'approved' | 'rejected'>('none');
+  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+
+  // Fetch current writer_status
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const { data, error: err } = await supabase
+          .from('profiles')
+          .select('writer_status, rejection_reason, full_name, pen_name, bio, phone_number, city, profile_photo')
+          .eq('id', user.id)
+          .single();
+        if (err) throw err;
+        setWriterStatus(data?.writer_status || 'none');
+        setRejectionReason(data?.rejection_reason || null);
+        // Pre-fill form from existing profile data
+        if (data?.full_name) setFullName(data.full_name);
+        if (data?.pen_name) setPenName(data.pen_name);
+        if (data?.bio) setBio(data.bio);
+        if (data?.phone_number) setPhone(data.phone_number);
+        if (data?.city) setCity(data.city);
+        if (data?.profile_photo) setPhotoUrl(data.profile_photo);
+      } catch (e) {
+        console.error('Error checking writer status:', e);
+      } finally {
+        setLoadingStatus(false);
+      }
+    })();
+  }, [user]);
+
+  if (loading || loadingStatus) {
     return (
       <main className="flex-1 flex items-center justify-center py-20">
         <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-black"></div>
@@ -74,15 +106,15 @@ export default function BecomeWriterPage() {
           phone_number: phone.trim(),
           city: city.trim(),
           profile_photo: photoUrl || null,
-          role: 'poster',
+          writer_status: 'pending',
+          applied_at: new Date().toISOString(),
         })
         .eq('id', user.id);
 
       if (dbError) throw dbError;
 
-      await refetchProfile();
       setDone(true);
-      setTimeout(() => navigate('/dashboard'), 2000);
+      setWriterStatus('pending');
     } catch (err: any) {
       setError(err.message || 'Failed to submit application.');
     } finally {
@@ -90,13 +122,52 @@ export default function BecomeWriterPage() {
     }
   };
 
-  if (done) {
+  // ── Pending State ──
+  if (writerStatus === 'pending' || done) {
     return (
       <main className="flex-1 flex items-center justify-center py-20 px-4 bg-gray-50">
         <div className="text-center bg-white p-10 rounded-xl border border-gray-200 shadow-sm max-w-md w-full">
-          <CheckCircle className="w-14 h-14 text-green-500 mx-auto mb-4" />
-          <h2 className="text-2xl font-black mb-2">Welcome, Writer!</h2>
-          <p className="text-sm text-gray-500">Your writer profile is set up. Redirecting to your dashboard...</p>
+          <Clock className="w-14 h-14 text-amber-500 mx-auto mb-4" />
+          <h2 className="text-2xl font-black mb-2">Application Submitted!</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Your writer application is being reviewed by our editorial team.
+            You'll receive access once approved.
+          </p>
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-xs font-bold uppercase tracking-wider">
+            <Clock size={14} /> Under Review
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Rejected State ──
+  if (writerStatus === 'rejected') {
+    return (
+      <main className="flex-1 bg-gray-50 py-12 px-4">
+        <div className="max-w-xl mx-auto">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 mb-6">
+            <div className="flex items-start gap-4">
+              <XCircle className="w-10 h-10 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <h2 className="text-xl font-black mb-1">Application Not Approved</h2>
+                <p className="text-sm text-gray-500 mb-4">
+                  Unfortunately, your writer application was not approved at this time.
+                </p>
+                {rejectionReason && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 mb-4">
+                    <span className="font-bold">Reason: </span>{rejectionReason}
+                  </div>
+                )}
+                <button
+                  onClick={() => { setWriterStatus('none'); setRejectionReason(null); }}
+                  className="inline-block bg-black text-white text-xs font-bold px-5 py-2.5 rounded uppercase tracking-wider hover:bg-gray-800 transition-colors cursor-pointer"
+                >
+                  Re-Apply
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </main>
     );
@@ -108,7 +179,7 @@ export default function BecomeWriterPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-black tracking-tight">Become a Writer</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Complete your writer profile to start publishing on Lensa Insignia.
+            Complete your writer profile. Your application will be reviewed by our editorial team before you can start publishing.
           </p>
         </div>
 
