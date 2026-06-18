@@ -391,7 +391,7 @@ async function createServer() {
     // --- Simple 404 Detection Logic ---
     const CATEGORIES = ['world','politics','business','tech','science','health','sports','arts','opinion'];
     const staticPages = ['about','careers','ethics','contact','terms','privacy','cookies','accessibility','newsletters'];
-    const authPages = ['login','register','profile','become-writer','dashboard','admin'];
+    const authPages = ['login','register','profile','become-writer','dashboard','admin','saved'];
     
     const isRoot = url === '/';
     const isCategory = url.startsWith('/category/') && CATEGORIES.includes(url.split('/')[2]);

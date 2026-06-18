@@ -17,6 +17,7 @@ const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
 const BecomeWriterPage = React.lazy(() => import('./pages/BecomeWriterPage'));
 const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
 const AuthorPage = React.lazy(() => import('./pages/AuthorPage'));
+const BookmarksPage = React.lazy(() => import('./pages/BookmarksPage'));
 
 import CategoryPage from './pages/CategoryPage';
 import NotFoundPage from './pages/NotFoundPage';
@@ -467,6 +468,11 @@ const Header = () => {
             >
               {isDark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
+            {user && (
+              <Link to="/saved" className="p-1.5 rounded-full hover:bg-gray-100 transition-colors" aria-label="Saved articles">
+                <Bookmark size={14} />
+              </Link>
+            )}
             <Link to="/newsletters" className="hover:text-ink transition-colors">Newsletters</Link>
           </div>
         </div>
@@ -1578,6 +1584,7 @@ function AppContent({ initialArticles }: { initialArticles?: any[] }) {
 
             {/* Category pages */}
             <Route path="/author/:name" element={<AuthorPage />} />
+            <Route path="/saved" element={<BookmarksPage />} />
             <Route path="/category/:slug" element={<CategoryPage />} />
 
             {/* Static pages */}
